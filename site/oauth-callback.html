@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Authorization code</title>
+<style>
+  :root { --bg: #f3f5f4; --fg: #0b0b0b; --muted: #52514e; --box: #fcfcfb; --line: rgba(11,11,11,.12); }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0e100f; --fg: #f0efec; --muted: #c3c2b7; --box: #1a1a19; --line: rgba(255,255,255,.12); color-scheme: dark; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; padding: 40px 16px; }
+  main { max-width: 640px; margin: 0 auto; display: grid; gap: 12px; }
+  textarea { width: 100%; min-height: 90px; font: 13px ui-monospace, monospace; background: var(--box); color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 10px; box-sizing: border-box; }
+  p { color: var(--muted); margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1 style="margin:0;font-size:20px">Copy this back into the setup script</h1>
+  <p>Paste the full URL below at the prompt in your terminal. Withings codes expire after about 30 seconds, so do it now.</p>
+  <textarea id="u" readonly></textarea>
+</main>
+<script>
+  const t = document.getElementById("u");
+  t.value = location.href;
+  t.focus(); t.select();
+</script>
+</body>
+</html>

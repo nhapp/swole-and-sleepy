@@ -1,0 +1,126 @@
+"""Daily job: refresh tokens, pull new data, recompute signals, write encrypted files.
+
+    SWOLE_PASSPHRASE=... python -m swole.run
+"""
+
+import json
+import os
+import sys
+import traceback
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+from . import crypto, garmin, metrics, strava, withings
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TOKENS_PATH = os.path.join(ROOT, "state", "tokens.enc.json")
+DATA_PATH = os.path.join(ROOT, "site", "data.enc.json")
+CONFIG_PATH = os.path.join(ROOT, "config.json")
+
+
+def load_config() -> dict:
+    with open(CONFIG_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def passphrase() -> str:
+    p = os.environ.get("SWOLE_PASSPHRASE")
+    if not p:
+        sys.exit("SWOLE_PASSPHRASE is not set")
+    return p
+
+
+def _window(raw_key: str, store: dict, cfg: dict, today):
+    """Backfill on first run, otherwise re-pull a short lookback so late syncs land."""
+    days = cfg["fetch"]["lookback_days"] if store.get(raw_key) else cfg["fetch"]["backfill_days"]
+    return today - timedelta(days=days)
+
+
+def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
+    """Fetch every configured source; one failing source never blocks the others."""
+    status = {}
+    raw = store.setdefault("raw", {"days": {}, "activities": {}, "body": {}})
+    now = datetime.now(timezone.utc).isoformat()
+
+    def run(name, fn):
+        prev = store.get("meta", {}).get("sources", {}).get(name, {})
+        if name not in tokens:
+            status[name] = {"ok": False, "error": "not set up", "last_success": prev.get("last_success")}
+            return
+        try:
+            fn()
+            status[name] = {"ok": True, "error": None, "last_success": now}
+        except Exception as e:  # noqa: BLE001 - surface any provider failure on the dashboard
+            traceback.print_exc()
+            status[name] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300],
+                            "last_success": prev.get("last_success")}
+
+    def do_garmin():
+        g = garmin.connect(tokens["garmin"])
+        try:
+            start = _window("days", raw, cfg, today)
+            for d, rec in garmin.fetch_daily(g, start, today).items():
+                raw["days"].setdefault(d, {}).update(rec)
+            # Per-day HR requests: cap the backfill so the first run stays polite.
+            wear_start = max(start, today - timedelta(days=cfg["fetch"]["wear_backfill_days"]))
+            for d, segs in garmin.fetch_wear(g, wear_start, today).items():
+                raw["days"].setdefault(d, {})["wear"] = segs
+            for a in garmin.fetch_activities(g, _window("activities", raw, cfg, today), today):
+                raw["activities"][a["id"]] = a
+        finally:
+            tokens["garmin"] = garmin.dump_tokens(g)
+
+    def do_strava():
+        strava.ensure_fresh(tokens["strava"])
+        since = datetime.combine(_window("activities", raw, cfg, today), datetime.min.time(), tz)
+        for a in strava.fetch_activities(tokens["strava"], since):
+            raw["activities"][a["id"]] = a
+
+    def do_withings():
+        withings.ensure_fresh(tokens["withings"])
+        since = datetime.combine(_window("body", raw, cfg, today), datetime.min.time(), tz)
+        for m in withings.fetch_measures(tokens["withings"], since, tz):
+            raw["body"][m["id"]] = m
+
+    run("garmin", do_garmin)
+    run("strava", do_strava)
+    run("withings", do_withings)
+    return status
+
+
+def build(store: dict, cfg: dict, status: dict, today) -> dict:
+    store["derived"] = metrics.compute(store["raw"], cfg, today)
+    store["meta"] = {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "today": today.isoformat(),
+        "sources": status,
+        "config": cfg,
+    }
+    return store
+
+
+def main() -> int:
+    cfg = load_config()
+    pw = passphrase()
+    tz = ZoneInfo(cfg["timezone"])
+    today = datetime.now(tz).date()
+
+    tokens = crypto.read_file(TOKENS_PATH, pw, default={})
+    store = crypto.read_file(DATA_PATH, pw, default={})
+    try:
+        status = pull(tokens, store, cfg, today, tz)
+    finally:
+        # Providers rotate refresh tokens; losing a fresh one means re-running setup.
+        crypto.write_file(TOKENS_PATH, tokens, pw)
+
+    crypto.write_file(DATA_PATH, build(store, cfg, status, today), pw)
+    for name, s in status.items():
+        print(f"{name:9s} {'ok' if s['ok'] else 'FAILED: ' + s['error']}")
+    g = store["derived"]["guidance"]
+    print(f"Today: {g['headline']} — {g['detail']}")
+    failed = [n for n, s in status.items() if not s["ok"] and s["error"] != "not set up"]
+    return 2 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

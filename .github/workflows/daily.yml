@@ -2,15 +2,22 @@ name: Daily swole sync
 
 on:
   schedule:
-    # 11:17 UTC = 7:17 EDT / 6:17 EST, after the watch has synced last night. Adjust to taste.
-    - cron: "17 11 * * *"
+    # Four runs a day (UTC): ~7am, noon, 5pm and 9pm Eastern, so today's food and workouts show up.
+    # The 7am run carries last night's sleep and this morning's readiness.
+    - cron: "17 11,16,21 * * *"
+    - cron: "17 1 * * *"
   workflow_dispatch:
+    inputs:
+      probe:
+        description: "Only print the field names Garmin returns (no data values, nothing saved)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
 concurrency:
-  # Two overlapping runs could each rotate a refresh token and one would be lost.
+  # Two overlapping runs could each rotate a Withings/Strava refresh token and one would be lost.
   group: swole-sync
   cancel-in-progress: false
 
@@ -28,15 +35,24 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Pull data and recompute
-        id: run
+      - name: Probe Garmin response shapes
+        if: inputs.probe
         env:
           SWOLE_PASSPHRASE: ${{ secrets.SWOLE_PASSPHRASE }}
+          GARMIN_PERSONAL_API_KEY: ${{ secrets.GARMIN_PERSONAL_API_KEY }}
+        run: python -m swole.run --probe
+
+      - name: Pull data and recompute
+        id: run
+        if: ${{ !inputs.probe }}
+        env:
+          SWOLE_PASSPHRASE: ${{ secrets.SWOLE_PASSPHRASE }}
+          GARMIN_PERSONAL_API_KEY: ${{ secrets.GARMIN_PERSONAL_API_KEY }}
         run: python -m swole.run
         continue-on-error: true
 
       - name: Commit encrypted data and rotated tokens
-        if: always()
+        if: ${{ always() && !inputs.probe }}
         run: |
           git config user.name "swole-sync"
           git config user.email "swole-sync@users.noreply.github.com"
@@ -44,7 +60,9 @@ jobs:
           if git diff --cached --quiet; then
             echo "No changes"
           else
-            git commit -m "Daily sync $(date -u +%Y-%m-%d)"
+            git commit -m "Sync $(date -u +%Y-%m-%dT%H:%MZ)"
+            # A food-log import may have been pushed meanwhile; replay this commit on top.
+            git pull --rebase -q origin main
             git push
           fi
 

@@ -247,16 +247,55 @@ def dedupe_activities(acts: list[dict]) -> list[dict]:
     return sorted(out, key=lambda a: a["start_utc"])
 
 
-def activity_load(a: dict, max_hr: float, rest_hr: float, sex: str) -> tuple[float, str]:
-    """Banister TRIMP when HR is available; Garmin's own load next; duration-only last."""
+def category(a: dict, long_run_minutes: float = 75) -> str:
+    """swim / run / long_run / lift / cycle / other, from the provider's sport name."""
+    s = (a.get("sport") or "").lower()
+    if "swim" in s:
+        return "swim"
+    if "run" in s and "rowing" not in s:
+        return "long_run" if (a.get("duration_s") or 0) / 60 >= long_run_minutes else "run"
+    if any(k in s for k in ("strength", "weight", "lift", "hiit", "functional")):
+        return "lift"
+    if any(k in s for k in ("cycl", "ride", "bik", "spin")):
+        return "cycle"
+    return "other"
+
+
+def max_hr(profile: dict) -> float:
+    return profile.get("max_hr") or round(208 - 0.7 * profile.get("age", 40))
+
+
+def activity_load(a: dict, hr_max: float, rest_hr: float, cfg_or_sex, cat: str = "other") -> tuple[float, str]:
+    """Training load for one session, on the TRIMP scale.
+
+    Wrist HR is unreliable in water and barely moves when lifting, so swims and lifts use
+    Garmin's own load (or duration) first; everything else uses Banister TRIMP from average HR.
+    """
+    tc = cfg_or_sex.get("training", {}) if isinstance(cfg_or_sex, dict) else {}
+    sex = cfg_or_sex.get("profile", {}).get("sex", "male") if isinstance(cfg_or_sex, dict) else cfg_or_sex
     mins = (a.get("duration_s") or 0) / 60
-    if a.get("avg_hr") and max_hr > rest_hr:
-        hrr = _clamp((a["avg_hr"] - rest_hr) / (max_hr - rest_hr), 0, 1)
+    per_min = tc.get("duration_load_per_min", {})
+    by_duration = mins * per_min.get(cat if cat != "long_run" else "run", per_min.get("default", 1.3))
+    if cat in tc.get("device_load_first_for", ["swim", "lift"]):
+        if a.get("device_load"):
+            return float(a["device_load"]), "garmin"
+        return by_duration, "duration"
+    if a.get("avg_hr") and hr_max > rest_hr:
+        hrr = _clamp((a["avg_hr"] - rest_hr) / (hr_max - rest_hr), 0, 1)
         kexp = 1.92 if sex == "male" else 1.67
         return mins * hrr * 0.64 * math.exp(kexp * hrr), "trimp"
     if a.get("device_load"):
         return float(a["device_load"]), "garmin"
-    return mins * 1.0, "duration"
+    return by_duration, "duration"
+
+
+def day_types(acts: list[dict]) -> dict[str, list[str]]:
+    """{date: sorted categories trained that day}; days with no activity are absent (= rest)."""
+    out: dict[str, set] = {}
+    for a in acts:
+        if a["cat"] != "other":
+            out.setdefault(a["date"], set()).add(a["cat"])
+    return {d: sorted(v) for d, v in out.items()}
 
 
 def training(activities: list[dict], days: dict, cfg: dict, today: date) -> dict:
@@ -267,8 +306,10 @@ def training(activities: list[dict], days: dict, cfg: dict, today: date) -> dict
     rest_hr = statistics.median(rhrs) if rhrs else 60
 
     load_by_day: dict[str, float] = {}
+    hr_max = max_hr(prof)
     for a in acts:
-        a["load"], a["load_method"] = activity_load(a, prof["max_hr"], rest_hr, prof.get("sex", "male"))
+        a["cat"] = category(a, tc.get("long_run_minutes", 75))
+        a["load"], a["load_method"] = activity_load(a, hr_max, rest_hr, cfg, a["cat"])
         a["load"] = round(a["load"], 1)
         load_by_day[a["date"]] = load_by_day.get(a["date"], 0) + a["load"]
 
@@ -301,8 +342,11 @@ def training(activities: list[dict], days: dict, cfg: dict, today: date) -> dict
         we = ws + timedelta(days=6)
         wk = [a for a in acts if ws <= _d(a["date"]) <= we]
         by_sport: dict[str, float] = {}
+        sessions: dict[str, int] = {}
         for a in wk:
             by_sport[a["sport"]] = by_sport.get(a["sport"], 0) + a["duration_s"] / 60
+            c = "run" if a["cat"] == "long_run" else a["cat"]
+            sessions[c] = sessions.get(c, 0) + 1
         weeks.append({
             "week_start": ws.isoformat(),
             "minutes": round(sum(a["duration_s"] for a in wk) / 60),
@@ -310,6 +354,7 @@ def training(activities: list[dict], days: dict, cfg: dict, today: date) -> dict
             "load": round(sum(a["load"] for a in wk)),
             "count": len(wk),
             "by_sport": {k: round(v) for k, v in by_sport.items()},
+            "sessions": sessions,
         })
 
     t = daily[-1]
@@ -337,15 +382,23 @@ def training(activities: list[dict], days: dict, cfg: dict, today: date) -> dict
         flags.append(_flag("warning", "Monotonous week",
                            f"Training monotony {monotony:.1f} (>2). Too little variation between hard and easy days."))
 
+    targets = tc.get("weekly_targets", {})
+    this_week = weeks[-1]["sessions"]
+    weekly_progress = [{"cat": c, "target": n, "done": this_week.get(c, 0)} for c, n in targets.items() if n]
+
     recent = [
-        {k: a[k] for k in ("date", "source", "sport", "name", "duration_s", "distance_m", "avg_hr", "load", "load_method")}
+        {k: a.get(k) for k in ("date", "source", "sport", "cat", "name", "duration_s", "distance_m", "avg_hr",
+                                "load", "load_method", "kcal")}
         for a in reversed(acts[-12:])
     ]
     return {
         "daily": daily,
         "weeks": weeks,
         "today": {"acute": t["acute"], "chronic": t["chronic"], "acwr": acwr, "zone": zone,
-                  "monotony": _r(monotony, 2), "strain": _r(strain, 0), "rest_hr_used": rest_hr},
+                  "monotony": _r(monotony, 2), "strain": _r(strain, 0), "rest_hr_used": rest_hr,
+                  "max_hr_used": hr_max},
+        "weekly_progress": weekly_progress,
+        "day_types": day_types(acts),
         "flags": flags,
         "recent": recent,
     }
@@ -376,7 +429,8 @@ def body(measures: list[dict], cfg: dict, today: date) -> dict:
         elif m["date"] in per_day:
             per_day[m["date"]].update({k: v for k, v in m.items() if k not in per_day[m["date"]]})
 
-    series, trend, fat_trend, lean_trend = [], None, None, None
+    series, trend, fat_trend, lean_trend, pct_trend = [], None, None, None, None
+    ma_days = bc.get("moving_avg_days", 7)
     for ds in sorted(per_day):
         m = per_day[ds]
         w = m["weight_kg"]
@@ -386,8 +440,11 @@ def body(measures: list[dict], cfg: dict, today: date) -> dict:
         if fat_kg:
             fat_trend = fat_kg if fat_trend is None else fat_trend + alpha * (fat_kg - fat_trend)
             lean_trend = lean if lean_trend is None else lean_trend + alpha * (lean - lean_trend)
+            pct_trend = fat_trend / trend * 100
+        lo = (_d(ds) - timedelta(days=ma_days - 1)).isoformat()
+        ma = _mean([per_day[x]["weight_kg"] for x in per_day if lo <= x <= ds])
         series.append({
-            "date": ds, "weight": w, "trend": round(trend, 2),
+            "date": ds, "weight": w, "trend": round(trend, 2), "ma7": _r(ma, 2), "fat_pct_trend": _r(pct_trend, 2),
             "fat_pct": m.get("fat_pct"), "fat_kg": _r(fat_kg, 2), "lean_kg": _r(lean, 2),
             "fat_trend": _r(fat_trend, 2), "lean_trend": _r(lean_trend, 2),
             "muscle_kg": m.get("muscle_kg"),
@@ -422,20 +479,104 @@ def body(measures: list[dict], cfg: dict, today: date) -> dict:
                            "weight. Consider protein intake and strength work."))
 
     goal = None
-    if bc.get("goal_weight_kg"):
-        to_go = last["trend"] - bc["goal_weight_kg"]
+    goal_w = bc.get("goal_weight_kg")
+    goal_pct = bc.get("goal_fat_pct")
+    if goal_pct and last.get("lean_trend"):
+        # Weight at the goal body-fat % if lean mass holds steady.
+        goal_w = last["lean_trend"] / (1 - goal_pct / 100)
+    if goal_w:
+        to_go = last["trend"] - goal_w
         eta = None
         if rate_kg_wk and to_go * rate_kg_wk < 0:
             eta = (today + timedelta(weeks=abs(to_go / rate_kg_wk))).isoformat()
-        goal = {"weight_kg": bc["goal_weight_kg"], "to_go_kg": round(to_go, 1), "eta": eta}
+        goal = {"weight_kg": round(goal_w, 1), "to_go_kg": round(to_go, 1), "eta": eta,
+                "fat_pct": goal_pct, "fat_pct_now": last.get("fat_pct_trend")}
 
     recent_cut = today - timedelta(days=SERIES_DAYS - 1)
     return {
         "series": [s for s in series if _d(s["date"]) >= recent_cut],
         "today": {
-            "date": last["date"], "weight": last["weight"], "trend": last["trend"],
+            "date": last["date"], "weight": last["weight"], "trend": last["trend"], "ma7": last["ma7"],
+            "fat_pct_trend": last["fat_pct_trend"],
             "fat_pct": last["fat_pct"], "rate_kg_wk": _r(rate_kg_wk, 2), "rate_pct_wk": _r(rate_pct_wk, 2),
             "fat_change_kg": fat_change, "lean_change_kg": lean_change, "goal": goal,
+        },
+        "flags": flags,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Nutrition
+# ---------------------------------------------------------------------------
+
+
+def targets_for(types: list[str], cfg: dict) -> dict:
+    """Daily targets: protein fixed; calories and carbs flex with the day's biggest demand."""
+    nc = cfg["nutrition"]
+    base = dict(nc["base_targets"])
+    adj_table = nc.get("day_type_adjust", {})
+    adjs = [adj_table.get(t, {}) for t in (types or ["rest"])]
+    adj = max(adjs, key=lambda a: a.get("kcal", 0)) if adjs else {}
+    base["kcal"] += adj.get("kcal", 0)
+    base["carbs_g"] += adj.get("carbs_g", 0)
+    return base
+
+
+def nutrition(food: dict, days: dict, types_by_day: dict, cfg: dict, today: date) -> dict:
+    nc = cfg["nutrition"]
+    series = []
+    for dt in _daterange(today - timedelta(days=SERIES_DAYS - 1), today):
+        ds = dt.isoformat()
+        f = food.get(ds, {})
+        types = types_by_day.get(ds, [])
+        tgt = targets_for(types, cfg)
+        kcal_out = days.get(ds, {}).get("kcal_total")
+        complete = dt < today
+        logged = f.get("kcal") is not None
+        series.append({
+            "date": ds, "types": types or (["rest"] if complete else []),
+            "kcal": f.get("kcal"), "protein_g": f.get("protein_g"), "carbs_g": f.get("carbs_g"), "fat_g": f.get("fat_g"),
+            "t_kcal": tgt["kcal"], "t_protein_g": tgt["protein_g"], "t_carbs_g": tgt["carbs_g"], "t_fat_g": tgt["fat_g"],
+            "kcal_out": kcal_out,
+            # Intake minus Garmin's total burn (BMR + active). An estimate: both sides carry error.
+            "balance": round(f["kcal"] - kcal_out) if logged and kcal_out and complete else None,
+            "complete": complete,
+        })
+
+    done = [x for x in series if x["complete"]]
+    last7 = done[-7:]
+    logged7 = [x for x in last7 if x["kcal"] is not None]
+    avg = lambda k: _r(_mean([x[k] for x in logged7]), 0)
+    bal7 = [x["balance"] for x in last7 if x["balance"] is not None]
+    avg_balance = _mean(bal7)
+    implied_lb_wk = avg_balance * 7 / nc.get("kcal_per_lb", 3500) if avg_balance is not None and len(bal7) >= 4 else None
+    protein_pct = (
+        _mean([x["protein_g"] / x["t_protein_g"] * 100 for x in logged7 if x["protein_g"] is not None]) if logged7 else None
+    )
+
+    flags = []
+    if food and len(logged7) < nc.get("min_logged_days_of_7", 5):
+        flags.append(_flag("info", "Food log has gaps",
+                           f"{len(logged7)} of the last 7 days logged. Averages and the calorie balance need most days."))
+    if protein_pct is not None and protein_pct < nc.get("protein_flag_pct", 90):
+        flags.append(_flag("warning", "Protein under target",
+                           f"7-day average {avg('protein_g'):.0f} g/day, {protein_pct:.0f}% of your "
+                           f"{nc['base_targets']['protein_g']} g target. That matters most when losing fat and lifting."))
+    if avg_balance is not None and len(bal7) >= 4 and avg_balance < -nc.get("deficit_flag_kcal", 750):
+        flags.append(_flag("warning", "Deep calorie deficit",
+                           f"Estimated {abs(avg_balance):,.0f} kcal/day below Garmin's burn over the last week. "
+                           "Large deficits make it harder to hold lean mass and recover from training."))
+
+    return {
+        "series": series,
+        "today": {
+            "date": today.isoformat(), "so_far": series[-1],
+            "yesterday": done[-1] if done else None,
+            "avg7": {"kcal": avg("kcal"), "protein_g": avg("protein_g"), "carbs_g": avg("carbs_g"), "fat_g": avg("fat_g"),
+                     "logged_days": len(logged7)},
+            "protein_pct7": _r(protein_pct, 0),
+            "balance7": _r(avg_balance, 0),
+            "implied_lb_wk": _r(implied_lb_wk, 2),
         },
         "flags": flags,
     }
@@ -466,7 +607,18 @@ def guidance(rec: dict, tr: dict) -> dict:
 
 
 def compute(raw: dict, cfg: dict, today: date) -> dict:
-    rec = recovery(raw.get("days", {}), cfg, today)
-    tr = training(list(raw.get("activities", {}).values()), raw.get("days", {}), cfg, today)
+    days = raw.get("days", {})
+    rec = recovery(days, cfg, today)
+    tr = training(list(raw.get("activities", {}).values()), days, cfg, today)
     bd = body(list(raw.get("body", {}).values()), cfg, today)
-    return {"recovery": rec, "training": tr, "body": bd, "guidance": guidance(rec, tr)}
+    nu = nutrition(raw.get("nutrition", {}), days, tr["day_types"], cfg, today)
+
+    # Reality check: does the logged calorie balance match what the scale trend says?
+    implied = nu["today"]["implied_lb_wk"]
+    measured = bd["today"]["rate_kg_wk"] * 2.20462 if bd["today"] and bd["today"]["rate_kg_wk"] is not None else None
+    nu["today"]["measured_lb_wk"] = _r(measured, 2)
+    if implied is not None and measured is not None and abs(implied - measured) > 0.5:
+        nu["flags"].append(_flag("info", "Calorie balance and scale disagree",
+                                 f"Logged intake vs Garmin's burn implies {implied:+.1f} lb/week; your weight trend shows "
+                                 f"{measured:+.1f} lb/week. Usually unlogged food or an over-estimated burn. Trust the scale trend."))
+    return {"recovery": rec, "training": tr, "body": bd, "nutrition": nu, "guidance": guidance(rec, tr)}

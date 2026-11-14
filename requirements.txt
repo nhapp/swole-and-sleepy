@@ -1,3 +1,3 @@
-garminconnect==0.3.19
+garmin-connect-personal-api-python==1.0.0
 cryptography>=43
 requests>=2.33

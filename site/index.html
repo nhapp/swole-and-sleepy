@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Martian+Mono:wght@400;500&display=swap">
 <style>
-/* Layout: a single scanning column — today's call, three signal panels, then evidence charts, then the assumptions. */
+/* Layout: a single scanning column — today's call, four signal panels, then evidence charts, then the assumptions. */
 :root {
   --bg: #f3f5f4;
   --surface: #fcfcfb;
@@ -88,7 +88,7 @@ a { color: var(--accent); }
 @media (max-width: 560px) { .call { grid-template-columns: 1fr; } .ring { grid-row: auto; } }
 
 /* Signal panels */
-.panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.panels { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 @media (max-width: 900px) { .panels { grid-template-columns: 1fr; } }
 .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 18px 20px 20px;
   display: grid; gap: 14px; align-content: start; min-width: 0; }
@@ -104,6 +104,15 @@ a { color: var(--accent); }
 .meter { position: relative; height: 8px; border-radius: 4px; background: var(--grid); }
 .meter i { position: absolute; top: -3px; width: 3px; height: 14px; border-radius: 2px; background: var(--ink); }
 .meter b { position: absolute; top: 0; bottom: 0; border-radius: 4px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
+.chip.done { background: color-mix(in srgb, var(--good) 14%, transparent); color: var(--good-ink); border-color: transparent; }
+.macro { display: grid; grid-template-columns: 74px 1fr auto; gap: 10px; align-items: center; font-size: 13.5px; }
+.macro .bar { position: relative; height: 8px; border-radius: 4px; background: var(--grid); overflow: hidden; }
+.macro .bar b { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--accent); }
+.macro .bar i { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); opacity: .55; }
+.macro .k { color: var(--ink-2); }
+.macro .v { font-variant-numeric: tabular-nums; text-align: right; }
 .scale { display: flex; justify-content: space-between; font: 11px var(--font-data); color: var(--muted); }
 
 /* Flags */
@@ -148,7 +157,7 @@ th:first-child, td:first-child { text-align: left; }
 th { font: 500 11px var(--font-data); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); position: sticky; top: 0; background: var(--surface); }
 
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r); padding: 6px 16px 10px; min-width: 0; }
-.assume { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.assume { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 @media (max-width: 900px) { .assume { grid-template-columns: 1fr; } }
 .assume .card { padding: 16px 20px; }
 .assume ul { margin: 8px 0 0; padding-left: 18px; color: var(--ink-2); font-size: 14px; display: grid; gap: 6px; }
@@ -195,6 +204,7 @@ th { font: 500 11px var(--font-data); text-transform: uppercase; letter-spacing:
     <section class="call" id="call" aria-live="polite"></section>
     <section class="panels">
       <article class="panel" id="pRecovery"></article>
+      <article class="panel" id="pNutrition"></article>
       <article class="panel" id="pTraining"></article>
       <article class="panel" id="pBody"></article>
     </section>
@@ -285,12 +295,13 @@ function icon(level, size = 18) {
 // ---------- header ----------
 function renderSources() {
   const s = DATA.meta.sources || {};
-  $("#sources").innerHTML = ["garmin", "strava", "withings"].map((n) => {
+  const names = { garmin: "Garmin", strava: "Strava", withings: "Withings", nutrition: "MyFitnessPal" };
+  $("#sources").innerHTML = ["garmin", "withings", "nutrition", "strava"].filter((n) => n !== "strava" || (s.strava && s.strava.error !== "not set up")).map((n) => {
     const x = s[n] || { ok: false, error: "not set up" };
     const state = x.ok ? "good" : x.error === "not set up" ? "info" : "critical";
     const color = x.ok ? "--good" : x.error === "not set up" ? "--muted" : "--critical";
-    const name = n[0].toUpperCase() + n.slice(1);
-    const text = x.ok ? `synced ${ago(x.last_success)}` : x.error === "not set up" ? "not connected" : `failed · last ok ${ago(x.last_success)}`;
+    const name = names[n];
+    const text = x.ok ? `${n === "nutrition" ? "imported" : "synced"} ${ago(x.last_success)}` : x.error === "not set up" ? "not connected" : `failed · last ok ${ago(x.last_success)}`;
     return `<span class="src" title="${esc(x.error || "")}"><span class="dot" style="background:var(${color})" aria-hidden="true"></span><b style="font-weight:600;color:var(--ink)">${name}</b> ${text}<span class="sr-only" hidden>${state}</span></span>`;
   }).join("");
 }
@@ -315,7 +326,16 @@ function renderCall() {
       <span class="label">${dlabel(DATA.meta.today, { weekday: "long", month: "long", day: "numeric" })}</span>
     </div>
     <div class="headline">${esc(g.headline)}</div>
-    <div class="detail">${esc(g.detail)}</div>`;
+    <div class="detail">${esc(g.detail)}</div>
+    ${todayTargets()}`;
+}
+
+const TYPE_LABEL = { rest: "Rest", swim: "Swim", run: "Run", long_run: "Long run", lift: "Lift", cycle: "Cycle" };
+const typesText = (types) => (types && types.length ? types : ["rest"]).map((t) => TYPE_LABEL[t] || t).join(" + ");
+function todayTargets() {
+  const n = DATA.derived.nutrition; if (!n) return "";
+  const t = n.today.so_far;
+  return `<div class="label" style="text-transform:none;letter-spacing:0">Today: ${typesText(t.types.length ? t.types : null)}${t.types.length ? "" : " so far"} · targets ${f(t.t_kcal)} kcal · ${f(t.t_protein_g)} g protein · ${f(t.t_carbs_g)} g carbs</div>`;
 }
 
 // ---------- panels ----------
@@ -347,12 +367,46 @@ function renderRecovery() {
     </div>`;
 }
 
+function macroRow(label, v, target, unit) {
+  const pct = v == null ? 0 : Math.min(130, (v / target) * 100);
+  return `<div class="macro"><span class="k">${label}</span>
+    <span class="bar" role="img" aria-label="${label} ${v == null ? "not logged" : f(v) + " of " + f(target) + " " + unit}"><b style="width:${(pct / 130) * 100}%"></b><i style="left:${(100 / 130) * 100}%"></i></span>
+    <span class="v">${v == null ? "–" : f(v)} / ${f(target)} ${unit}</span></div>`;
+}
+
+function renderNutrition() {
+  const N = DATA.derived.nutrition, nc = CFG.nutrition;
+  const el = $("#pNutrition");
+  if (!N) { el.innerHTML = ""; return; }
+  const t = N.today, y = t.yesterday, a = t.avg7;
+  const head = `<div class="panel-head"><h3>Nutrition</h3><span class="label">MyFitnessPal</span></div>`;
+  if (!y || (y.kcal == null && a.logged_days === 0)) {
+    el.innerHTML = head + `<p class="muted" style="margin:0">No food log yet. Import a MyFitnessPal export (see the README), or it will fill in once the MyFitnessPal API is connected.</p>`;
+    return;
+  }
+  const bal = t.balance7;
+  el.innerHTML = `${head}
+    <div class="hero"><span class="v num">${y.kcal == null ? "–" : f(y.kcal)}</span><span class="u">kcal yesterday · ${typesText(y.types)} day</span></div>
+    <div style="display:grid;gap:8px">
+      ${macroRow("Calories", y.kcal, y.t_kcal, "")}
+      ${macroRow("Protein", y.protein_g, y.t_protein_g, "g")}
+      ${macroRow("Carbs", y.carbs_g, y.t_carbs_g, "g")}
+      ${macroRow("Fat", y.fat_g, y.t_fat_g, "g")}
+    </div>
+    <div class="rows">
+      <div class="row"><span class="k">7-day average</span><span class="val">${f(a.kcal)} kcal · ${f(a.protein_g)} g protein</span>
+        <span class="sub">${a.logged_days} of 7 days logged · protein ${t.protein_pct7 == null ? "–" : f(t.protein_pct7) + "%"} of target</span></div>
+      <div class="row"><span class="k">Estimated balance</span><span class="val">${bal == null ? "–" : signed(bal, 0) + " kcal/day"}</span>
+        <span class="sub">Estimate: logged intake minus Garmin's total burn, last 7 days${t.implied_lb_wk != null ? ` · implies ${signed(IMPERIAL ? t.implied_lb_wk : t.implied_lb_wk / 2.20462, 1)} ${wtU()}/wk vs ${t.measured_lb_wk == null ? "–" : signed(IMPERIAL ? t.measured_lb_wk : t.measured_lb_wk / 2.20462, 1)} on the scale` : ""}</span></div>
+    </div>`;
+}
+
 function renderTraining() {
   const T = DATA.derived.training, t = T.today, tc = CFG.training;
   const zoneLabel = { optimal: "In balance", high: "Ramping", danger: "Spike", low: "Under-loaded" }[t.zone] || "Not enough history";
   const thisWeek = T.weeks[T.weeks.length - 1], prev = T.weeks[T.weeks.length - 2];
   $("#pTraining").innerHTML = `
-    <div class="panel-head"><h3>Training load</h3><span class="label">Garmin + Strava</span></div>
+    <div class="panel-head"><h3>Training load</h3><span class="label">Garmin</span></div>
     <div class="hero"><span class="v num">${t.acwr == null ? "–" : f(t.acwr, 2)}</span><span class="u">acute : chronic · ${zoneLabel}</span></div>
     ${bandMeter(t.acwr, 0.4, 2.0, [[0.4, tc.acwr_low, "--accent"], [tc.acwr_low, tc.acwr_high, "--good"], [tc.acwr_high, tc.acwr_danger, "--warning"], [tc.acwr_danger, 2.0, "--critical"]])}
     <div class="scale"><span>0.4</span><span>${tc.acwr_low}</span><span>${tc.acwr_high}</span><span>${tc.acwr_danger}</span><span>2.0</span></div>
@@ -361,7 +415,9 @@ function renderTraining() {
       <div class="row"><span class="k">Chronic load (${tc.chronic_days}-day avg)</span><span class="val">${f(t.chronic)}</span></div>
       <div class="row"><span class="k">This week</span><span class="val">${hm(thisWeek.minutes * 60)} · ${thisWeek.count} sessions</span>
         <span class="sub">Last week ${hm(prev.minutes * 60)}, ${f(dist(prev.distance_km), 1)} ${distU()} · monotony ${t.monotony == null ? "–" : f(t.monotony, 1)}</span></div>
-    </div>`;
+    </div>
+    ${(T.weekly_progress || []).length ? `<div class="chips" aria-label="Sessions this week against targets">${T.weekly_progress.map((w) =>
+      `<span class="chip${w.done >= w.target ? " done" : ""}">${w.done >= w.target ? icon("good", 12) : ""}${TYPE_LABEL[w.cat]} ${w.done}/${w.target}</span>`).join("")}</div>` : ""}`;
 }
 
 function renderBody() {
@@ -375,13 +431,14 @@ function renderBody() {
     ${bandMeter(t.rate_pct_wk, -2, 1.5, [[-2, -bc.max_loss_pct_per_week, "--warning"], [-bc.max_loss_pct_per_week, bc.max_gain_pct_per_week, "--good"], [bc.max_gain_pct_per_week, 1.5, "--warning"]])}
     <div class="scale"><span>−2%/wk</span><span>−${bc.max_loss_pct_per_week}%</span><span>0</span><span>+${bc.max_gain_pct_per_week}%</span><span>+1.5%</span></div>
     <div class="rows">
+      <div class="row"><span class="k">7-day average</span><span class="val">${f(wt(t.ma7), 1)} ${wtU()}</span></div>
       <div class="row"><span class="k">Rate (${bc.slope_days}-day trend)</span><span class="val">${signed(rate, 2)} ${wtU()}/wk</span>
         <span class="sub">${signed(t.rate_pct_wk, 2)}% of body weight per week</span></div>
       <div class="row"><span class="k">Fat mass, ${bc.slope_days} days</span><span class="val">${signed(wt(t.fat_change_kg), 1)} ${wtU()}</span>
-        <span class="sub">Body fat ${t.fat_pct == null ? "–" : f(t.fat_pct, 1) + "%"} on the last reading</span></div>
+        <span class="sub">Body fat ${t.fat_pct_trend == null ? "–" : f(t.fat_pct_trend, 1) + "%"} trend · ${t.fat_pct == null ? "–" : f(t.fat_pct, 1) + "%"} on the last reading</span></div>
       <div class="row"><span class="k">Lean mass, ${bc.slope_days} days</span><span class="val">${signed(wt(t.lean_change_kg), 1)} ${wtU()}</span></div>
-      ${goal ? `<div class="row"><span class="k">Goal ${f(wt(goal.weight_kg), 1)} ${wtU()}</span><span class="val">${goal.to_go_kg <= 0 ? "Reached" : f(wt(goal.to_go_kg), 1) + " " + wtU() + " to go"}</span>
-        <span class="sub">${goal.eta ? "At this rate: " + dlabel(goal.eta, { month: "long", day: "numeric", year: "numeric" }) : goal.to_go_kg > 0 ? "Not trending toward goal" : ""}</span></div>` : ""}
+      ${goal ? `<div class="row"><span class="k">Goal ${goal.fat_pct ? f(goal.fat_pct, 1) + "% body fat ≈ " : ""}${f(wt(goal.weight_kg), 1)} ${wtU()}</span><span class="val">${goal.to_go_kg <= 0 ? "Reached" : f(wt(goal.to_go_kg), 1) + " " + wtU() + " to go"}</span>
+        <span class="sub">${goal.fat_pct ? "Weight at that body fat if lean mass holds · " : ""}${goal.eta ? "at this rate: " + dlabel(goal.eta, { month: "long", day: "numeric", year: "numeric" }) : goal.to_go_kg > 0 ? "not trending toward goal yet" : ""}</span></div>` : ""}
     </div>`;
 }
 
@@ -392,6 +449,7 @@ function renderFlags() {
     ...d.recovery.flags.map((x) => ({ ...x, area: "Recovery" })),
     ...d.training.flags.map((x) => ({ ...x, area: "Training" })),
     ...d.body.flags.map((x) => ({ ...x, area: "Body" })),
+    ...((d.nutrition && d.nutrition.flags) || []).map((x) => ({ ...x, area: "Nutrition" })),
   ].sort((a, b) => order[a.level] - order[b.level]);
   $("#flags").innerHTML = all.length ? all.map((x) => `
     <div class="flag">${icon(x.level)}
@@ -472,9 +530,9 @@ function chart(spec) {
         const bw = Math.max(2, Math.min(24, step - 2));
         rows.forEach((r, i) => {
           const v = r[se.key]; if (!v) return;
-          const top = Y(v), base = Y(Math.max(0, y0)), h = base - top, rr = Math.min(4, bw / 2, h);
-          const x = X(i) - bw / 2;
-          s += `<path d="M${x},${base}V${top + rr}Q${x},${top} ${x + rr},${top}H${x + bw - rr}Q${x + bw},${top} ${x + bw},${top + rr}V${base}Z" fill="${se.color}" opacity="${se.opacity ?? 1}"/>`;
+          const base = Y(Math.min(Math.max(0, y0), y1)), end = Y(v), x = X(i) - bw / 2;
+          const dir = end < base ? 1 : -1, rr = Math.min(4, bw / 2, Math.abs(base - end));
+          s += `<path d="M${x},${base}V${end + dir * rr}Q${x},${end} ${x + rr},${end}H${x + bw - rr}Q${x + bw},${end} ${x + bw},${end + dir * rr}V${base}Z" fill="${se.color}" opacity="${se.opacity ?? 1}"/>`;
         });
       } else if (se.type === "line") {
         let d = "", pen = false;
@@ -542,12 +600,13 @@ function renderCharts() {
     const by = Object.fromEntries(d.body.series.map((r) => [r.date, r]));
     return rec.map((r) => {
       const b = by[r.date] || {};
-      return { date: r.date, weight: wt(b.weight), trend: wt(b.trend), fat: wt(b.fat_trend), lean: wt(b.lean_trend) };
+      return { date: r.date, weight: wt(b.weight), trend: wt(b.trend), ma7: wt(b.ma7), fat: wt(b.fat_trend), lean: wt(b.lean_trend), fatpct: b.fat_pct_trend };
     });
   })();
   // Carry the smoothed trend across days without a weigh-in so lines don't break.
-  let lt = null, lf = null, ll = null;
-  bodyRows.forEach((r) => { r.trend ??= lt; r.fat ??= lf; r.lean ??= ll; lt = r.trend; lf = r.fat; ll = r.lean; });
+  let lt = null, lf = null, ll = null, lp = null;
+  bodyRows.forEach((r) => { r.trend ??= lt; r.fat ??= lf; r.lean ??= ll; r.fatpct ??= lp; lt = r.trend; lf = r.fat; ll = r.lean; lp = r.fatpct; });
+  const food = d.nutrition ? inRange(d.nutrition.series).filter((r) => r.complete) : [];
   const weeks = d.training.weeks.slice(-Math.max(4, Math.round(RANGE / 7))).map((w) => ({ ...w, date: w.week_start, hours: w.minutes / 60 }));
   const A = "var(--accent)", B = "var(--accent-2)", M = "var(--muted)";
   const wf1 = (v) => f(v, 1);
@@ -578,9 +637,20 @@ function renderCharts() {
     { title: "Weekly training time", sub: "Hours per week, Monday to Sunday", rows: weeks, yMin: 0,
       xLabel: (r, long) => dlabel(r.week_start, long ? { month: "short", day: "numeric", year: "numeric" } : undefined),
       series: [{ type: "bars", key: "hours", color: A, fmt: (v) => hm(v * 3600) }], yFmt: (v) => f(v, v % 1 ? 1 : 0) },
-    { title: "Weight", sub: `Daily weigh-ins and the smoothed trend (${wtU()})`, rows: bodyRows,
-      series: [{ type: "dots", key: "weight", color: M, label: "Scale", fmt: wf1 }, { type: "line", key: "trend", color: A, label: "Trend", fmt: wf1 }], yFmt: (v) => f(v, v % 1 ? 1 : 0) },
-    { title: "Fat mass trend", sub: `Smoothed fat mass (${wtU()})`, rows: bodyRows, series: [{ type: "line", key: "fat", color: B, fmt: wf1 }], yFmt: (v) => f(v, v % 1 ? 1 : 0) },
+    { title: "Calories", sub: "Logged intake against the day's target, which flexes by training type", rows: food, yMin: 0,
+      series: [{ type: "bars", key: "kcal", color: A, opacity: 0.6, label: "Eaten" }, { type: "line", key: "t_kcal", color: B, label: "Target" }],
+      yFmt: (v) => v >= 1000 ? f(v / 1000, v % 1000 ? 1 : 0) + "K" : f(v) },
+    { title: "Protein", sub: "Grams per day against your fixed target", rows: food, yMin: 0,
+      refs: [{ y: CFG.nutrition.base_targets.protein_g, label: "Target " + CFG.nutrition.base_targets.protein_g + " g" }],
+      series: [{ type: "bars", key: "protein_g", color: A, opacity: 0.6, fmt: (v) => f(v) + " g" }] },
+    { title: "Estimated calorie balance", sub: "Intake minus Garmin's total burn. An estimate: both sides carry error.", rows: food,
+      series: [{ type: "bars", key: "balance", color: A, opacity: 0.6, fmt: (v) => signed(v, 0) + " kcal" }], yFmt: (v) => f(v) },
+    { title: "Weight", sub: `Daily weigh-ins, 7-day average and the smoothed trend (${wtU()})`, rows: bodyRows,
+      series: [{ type: "dots", key: "weight", color: M, label: "Scale", fmt: wf1 }, { type: "line", key: "ma7", color: B, label: "7-day average", fmt: wf1 },
+               { type: "line", key: "trend", color: A, label: "Trend", fmt: wf1 }], yFmt: (v) => f(v, v % 1 ? 1 : 0) },
+    { title: "Body fat", sub: "Smoothed body-fat % against your goal", rows: bodyRows,
+      refs: CFG.body.goal_fat_pct ? [{ y: CFG.body.goal_fat_pct, label: "Goal " + CFG.body.goal_fat_pct + "%" }] : [],
+      series: [{ type: "line", key: "fatpct", color: B, fmt: (v) => f(v, 1) + "%" }], yFmt: (v) => f(v, v % 1 ? 1 : 0) },
     { title: "Lean mass trend", sub: `Smoothed weight minus fat mass (${wtU()})`, rows: bodyRows, series: [{ type: "line", key: "lean", color: A, fmt: wf1 }], yFmt: (v) => f(v, v % 1 ? 1 : 0) },
   ];
   const host = $("#charts");
@@ -596,7 +666,7 @@ function renderActivities() {
   const rows = DATA.derived.training.recent;
   const method = { trimp: "HR", garmin: "Garmin", duration: "time" };
   $("#acts").innerHTML = `<thead><tr><th>Date</th><th>Activity</th><th>Time</th><th>Distance</th><th>Avg HR</th><th>Load</th><th>Source</th></tr></thead><tbody>${
-    rows.map((a) => `<tr><td>${dlabel(a.date, { weekday: "short", month: "short", day: "numeric" })}</td><td style="text-align:left">${esc(a.sport)}</td>
+    rows.map((a) => `<tr><td>${dlabel(a.date, { weekday: "short", month: "short", day: "numeric" })}</td><td style="text-align:left">${esc(a.sport)}${a.cat === "long_run" ? ' <span class="muted" style="font-size:11px">long</span>' : ""}</td>
       <td>${hm(a.duration_s)}</td><td>${a.distance_m ? f(dist(a.distance_m / 1000), 1) + " " + distU() : "–"}</td>
       <td>${a.avg_hr ? f(a.avg_hr) : "–"}</td><td>${f(a.load)} <span class="muted" style="font-size:11px">${method[a.load_method] || ""}</span></td>
       <td style="text-transform:capitalize">${esc(a.source)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">No activities yet.</td></tr>`}</tbody>`;
@@ -614,7 +684,9 @@ function renderAssumptions() {
       <li>HRV is only recorded on nights the watch is worn. On other nights readiness uses resting HR and sleep, with the weights rescaled.</li>
       <li>Two or more warnings force the day to Recover, whatever the score says.</li></ul></div>
     <div class="card"><h3>Training load</h3><ul>
-      <li>Load per session is Banister TRIMP from average HR, with max HR <code>${CFG.profile.max_hr}</code> and resting HR from your 30-day median.</li>
+      <li>Runs and rides are scored with Banister TRIMP from average HR, using max HR <code>${DATA.derived.training.today.max_hr_used}</code>${CFG.profile.max_hr ? "" : " (estimated from age; set your real max in config)"} and resting HR from your 30-day median.</li>
+      <li>Wrist HR is unreliable in water and barely rises when lifting, so swims and lifts use Garmin's own training load, or minutes × <code>${t.duration_load_per_min.swim}</code> (swim) / <code>${t.duration_load_per_min.lift}</code> (lift).</li>
+      <li>A run of <code>${t.long_run_minutes} min</code> or more counts as a long run.</li>
       <li>Activities on both Garmin and Strava are counted once. The Garmin copy wins when start times are within 5 minutes.</li>
       <li>Acute:chronic is the ${t.acute_days}-day over the ${t.chronic_days}-day average daily load. It flags fast ramps well but is a rough injury predictor; read it with how you feel.</li>
       <li>Monotony (mean ÷ SD of the last 7 days) above 2 means too little contrast between hard and easy days.</li></ul></div>
@@ -622,13 +694,19 @@ function renderAssumptions() {
       <li>One reading per day, the earliest, because morning weigh-ins are the most consistent.</li>
       <li>Trend is an exponential moving average (α <code>${b.trend_alpha}</code>), so water and food swings fade out.</li>
       <li>Rate is the slope of the trend over <code>${b.slope_days}</code> days. Losing faster than <code>${b.max_loss_pct_per_week}%</code> a week is flagged.</li>
-      <li>Scale body fat (bioimpedance) is noisy day to day. Read the fat and lean lines over weeks, not single days.</li></ul></div>`;
+      <li>Scale body fat (bioimpedance) is noisy day to day. Read the fat and lean lines over weeks, not single days.</li>
+      <li>The goal weight is what you'd weigh at <code>${b.goal_fat_pct}%</code> body fat if lean mass stayed where it is. A smoothed lean-mass change is not the same as muscle gained.</li></ul></div>
+    <div class="card"><h3>Nutrition</h3><ul>
+      <li>Targets: <code>${f(CFG.nutrition.base_targets.kcal)} kcal</code>, <code>${CFG.nutrition.base_targets.protein_g} g</code> protein, <code>${CFG.nutrition.base_targets.carbs_g} g</code> carbs, <code>${CFG.nutrition.base_targets.fat_g} g</code> fat.</li>
+      <li>Protein stays fixed. Calories and carbs flex by day type (rest ${signed(CFG.nutrition.day_type_adjust.rest.kcal, 0)} kcal, long run ${signed(CFG.nutrition.day_type_adjust.long_run.kcal, 0)} kcal). With two sessions in a day, the bigger adjustment applies.</li>
+      <li>Calorie balance is MyFitnessPal intake minus Garmin's total burn, never MFP's own exercise calories, so workouts aren't counted twice. It's an estimate, so it's checked against the scale trend.</li>
+      <li>Weekly averages need at least <code>${CFG.nutrition.min_logged_days_of_7}</code> logged days out of 7.</li></ul></div>`;
 }
 
 function renderAll() {
   CFG = DATA.meta.config; IMPERIAL = CFG.units === "imperial";
   $("#demoBanner").hidden = !DATA.meta.demo;
-  renderSources(); renderCall(); renderRecovery(); renderTraining(); renderBody(); renderFlags(); renderActivities(); renderAssumptions();
+  renderSources(); renderCall(); renderRecovery(); renderNutrition(); renderTraining(); renderBody(); renderFlags(); renderActivities(); renderAssumptions();
   $("#lock").hidden = true; $("#app").hidden = false;
   renderCharts();
 }

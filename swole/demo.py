@@ -17,10 +17,11 @@ from .run import ROOT, load_config
 def synth(today: date, n_days: int = 200, seed: int = 7, tz: str = "America/New_York") -> dict:
     rnd = random.Random(seed)
     zone = ZoneInfo(tz)
-    days, acts, body = {}, {}, {}
+    days, acts, body, food = {}, {}, {}, {}
     worn_nights = set()
     night = {}  # wake date -> (watch worn overnight?, hours asleep)
-    weight, fat_pct = 84.0, 22.0
+    # Ends near the spec's baseline: 165 lb, ~20.7% body fat.
+    weight, fat_pct = 78.0, 22.8
     for i in range(n_days):
         d = today - timedelta(days=n_days - 1 - i)
         ds = d.isoformat()
@@ -40,25 +41,47 @@ def synth(today: date, n_days: int = 200, seed: int = 7, tz: str = "America/New_
         night[ds] = (worn, sleep_h)
 
         wd = d.weekday()
-        plan = {1: ("Running", 55, 152), 3: ("Running", 45, 160), 5: ("Cycling", 110, 138), 6: ("Running", 80, 145),
-                0: ("Strength Training", 40, 112)}
-        if wd in plan and rnd.random() > 0.1:
-            sport, mins, hr = plan[wd]
+        # (sport, minutes, avg HR, Garmin load, km/min); Mon swim+lift, Tue run, Wed lift, Thu swim,
+        # Fri rest, Sat run (some weeks a ride), Sun long run.
+        plan = {0: [("Lap Swimming", 45, 128, 70, 0.045), ("Strength Training", 40, 108, 35, 0)],
+                1: [("Running", 50, 148, None, 0.17)], 2: [("Strength Training", 45, 110, 40, 0)],
+                3: [("Lap Swimming", 50, 130, 78, 0.046)], 5: [("Running", 45, 150, None, 0.17)],
+                6: [("Running", 95, 142, None, 0.165)]}
+        sessions = list(plan.get(wd, []))
+        if wd == 5 and rnd.random() < 0.3:
+            sessions = [("Cycling", 100, 132, None, 0.42)]
+        burn = 0
+        for k, (sport, mins, hr, dload, kmpm) in enumerate(sessions):
+            if rnd.random() < 0.1:
+                continue
             mins *= 1 + 0.35 * stress
             src = "strava" if sport == "Cycling" else "garmin"
-            start = datetime.combine(d, datetime.min.time(), timezone.utc) + timedelta(hours=11)
-            km = mins * (0.18 if sport == "Running" else 0.45 if sport == "Cycling" else 0)
-            acts[f"{src}:{i}"] = {
-                "id": f"{src}:{i}", "source": src, "date": ds, "start_utc": start.isoformat(), "sport": sport,
-                "name": f"{sport} session", "duration_s": int(mins * 60), "distance_m": km * 1000,
-                "avg_hr": round(rnd.gauss(hr, 4)), "max_hr": hr + 20, "device_load": None,
+            start = datetime.combine(d, datetime.min.time(), timezone.utc) + timedelta(hours=11 + k)
+            kcal = mins * (10 if sport != "Strength Training" else 6)
+            burn += kcal
+            key = f"{src}:{i}{k}"
+            acts[key] = {
+                "id": key, "source": src, "date": ds, "start_utc": start.isoformat(), "sport": sport,
+                "name": f"{sport} session", "duration_s": int(mins * 60), "distance_m": mins * kmpm * 1000,
+                "avg_hr": round(rnd.gauss(hr, 4)), "max_hr": hr + 20,
+                "device_load": round(dload * (1 + 0.35 * stress) * rnd.uniform(0.85, 1.15)) if dload else None,
+                "kcal": round(kcal),
             }
             if src == "garmin":  # mirror to Strava, as auto-sync would; must dedupe
-                acts[f"strava:m{i}"] = dict(acts[f"{src}:{i}"], id=f"strava:m{i}", source="strava",
-                                            start_utc=(start + timedelta(seconds=20)).isoformat())
+                acts[f"strava:m{i}{k}"] = dict(acts[key], id=f"strava:m{i}{k}", source="strava",
+                                               start_utc=(start + timedelta(seconds=20)).isoformat())
+        days[ds]["kcal_total"] = round(1580 + steps * 0.035 + burn)
+        # Food log: ~85% of days, close to target, protein a little light.
+        if d < today and rnd.random() < 0.85:
+            target = 2350 + (400 if wd == 6 else -250 if wd == 4 else 0)
+            kcal = rnd.gauss(target - 120, 180)
+            prot = rnd.gauss(138, 14)
+            fat = rnd.gauss(72, 10)
+            food[ds] = {"kcal": round(kcal), "protein_g": round(prot), "fat_g": round(fat),
+                        "carbs_g": round(max(80, (kcal - prot * 4 - fat * 9) / 4)), "source": "demo"}
 
-        weight += -0.035 + rnd.gauss(0, 0.02)
-        fat_pct += -0.012
+        weight += -0.022 + rnd.gauss(0, 0.02)
+        fat_pct += -0.011
         if rnd.random() < 0.8:
             w = weight + rnd.gauss(0, 0.45) + 0.4 * math.sin(i / 3)
             ts = int(datetime.combine(d, datetime.min.time(), timezone.utc).timestamp()) + 7 * 3600
@@ -84,16 +107,15 @@ def synth(today: date, n_days: int = 200, seed: int = 7, tz: str = "America/New_
         if d == today:
             segs = [[at(on_min), at(on_min + 150)]]
         days[ds]["wear"] = segs
-    return {"days": days, "activities": acts, "body": body}
+    return {"days": days, "activities": acts, "body": body, "nutrition": food}
 
 
 def main():
     cfg = load_config()
-    cfg["body"]["goal_weight_kg"] = 78
     today = date.today()
     raw = synth(today)
     sources = {s: {"ok": True, "error": None, "last_success": datetime.now(timezone.utc).isoformat()}
-               for s in ("garmin", "strava", "withings")}
+               for s in ("garmin", "strava", "withings", "nutrition")}
     out = {"derived": metrics.compute(raw, cfg, today),
            "meta": {"generated_at": datetime.now(timezone.utc).isoformat(), "today": today.isoformat(),
                     "sources": sources, "config": cfg, "demo": True}}

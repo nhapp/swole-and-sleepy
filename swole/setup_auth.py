@@ -1,7 +1,9 @@
-"""One-time, local authorization for each source. Run on your own computer, not in CI.
+"""One-time, local OAuth authorization for Withings (and optionally Strava). Run on your own computer.
+
+Garmin needs no step here: its personal API key goes straight into the
+GARMIN_PERSONAL_API_KEY GitHub secret.
 
     export SWOLE_PASSPHRASE='a long passphrase'
-    python -m swole.setup_auth garmin
     python -m swole.setup_auth strava
     python -m swole.setup_auth withings
 
@@ -13,7 +15,7 @@ import getpass
 import sys
 from urllib.parse import parse_qs, urlparse
 
-from . import crypto, garmin, strava, withings
+from . import crypto, strava, withings
 from .run import TOKENS_PATH, passphrase
 
 REDIRECT_URI = "http://localhost/swole"
@@ -27,14 +29,6 @@ def _code_from_pasted_url(redirect_uri: str) -> str:
     if "code" not in qs:
         sys.exit(f"No ?code= in that URL ({qs.get('error', ['unknown error'])[0]})")
     return qs["code"][0]
-
-
-def setup_garmin(tokens: dict):
-    email = input("Garmin Connect email: ").strip()
-    pw = getpass.getpass("Garmin Connect password (not stored): ")
-    tokens["garmin"] = garmin.login_interactive(email, pw)
-    g = garmin.connect(tokens["garmin"])
-    print(f"Connected to Garmin as {g.get_full_name()}")
 
 
 def setup_strava(tokens: dict):
@@ -63,12 +57,12 @@ def setup_withings(tokens: dict):
 
 
 def main():
-    which = sys.argv[1:] or ["garmin", "strava", "withings"]
+    which = sys.argv[1:] or ["withings"]
     pw = passphrase()
     tokens = crypto.read_file(TOKENS_PATH, pw, default={})
     for name in which:
         print(f"\n=== {name} ===")
-        {"garmin": setup_garmin, "strava": setup_strava, "withings": setup_withings}[name](tokens)
+        {"strava": setup_strava, "withings": setup_withings}[name](tokens)
         crypto.write_file(TOKENS_PATH, tokens, pw)
     print(f"\nSaved {TOKENS_PATH}. Commit and push it, then run the GitHub Action once.")
 

@@ -1,36 +1,29 @@
-"""Garmin Connect via the unofficial `garminconnect` library (Garmin has no personal API).
+"""Garmin Connect via Garmin's official Personal API (garmin-connect-personal-api-python).
 
-Login with username/password + MFA happens once, locally (setup_auth.py). The daily job
-only resumes from the saved DI token JSON, which the library refreshes as needed;
-the refreshed token is returned so it can be persisted.
+Auth is a long-lived personal API key (created in Garmin Connect settings), exchanged
+each run for a 24-hour bearer token. Nothing rotates, so nothing needs persisting.
+
+Response shapes are parsed defensively: rows are found by their `calendarDate` and
+values by a list of candidate field names, so small schema differences don't break a run.
+`python -m swole.run --probe` prints the field names each endpoint actually returns.
 """
 
+import os
+import tempfile
 from datetime import date, datetime, timedelta, timezone
 
-from garminconnect import Garmin
+from garmin_personal_api import GarminPersonalApiClient, PersonalApiAuthenticator
 
 
-def login_interactive(email: str, password: str) -> str:
-    g = Garmin(email, password, prompt_mfa=lambda: input("Garmin MFA code: ").strip())
-    g.login()
-    return g.client.dumps()
-
-
-def connect(token_json: str) -> Garmin:
-    g = Garmin()
-    g.login(token_json)
-    return g
-
-
-def dump_tokens(g: Garmin) -> str:
-    return g.client.dumps()
+def connect(api_key: str) -> GarminPersonalApiClient:
+    cache = os.path.join(tempfile.gettempdir(), "swole-garmin-token.json")
+    with PersonalApiAuthenticator(bearer_token_cache_file=cache) as auth:
+        token = auth.obtain_token(api_key)
+    return GarminPersonalApiClient(token.access_token)
 
 
 def _find(d, *keys):
-    """First non-null value for any of `keys`, searching nested dicts breadth-first.
-
-    Garmin's response shapes drift; this keeps the parser tolerant of nesting changes.
-    """
+    """First non-null value for any of `keys`, searching nested dicts breadth-first."""
     queue = [d]
     while queue:
         cur = queue.pop(0)
@@ -38,59 +31,83 @@ def _find(d, *keys):
             continue
         for k in keys:
             v = cur.get(k)
-            if v is not None and not isinstance(v, dict):
+            if v is not None and not isinstance(v, (dict, list)):
                 return v
-            if isinstance(v, dict) and "value" in v and v["value"] is not None:
+            if isinstance(v, dict) and v.get("value") is not None:
                 return v["value"]
         queue.extend(v for v in cur.values() if isinstance(v, dict))
     return None
 
 
-def _chunks(start: date, end: date, days: int):
+def _rows(resp) -> list[dict]:
+    """Every dict carrying a `calendarDate`, wherever the endpoint nests them."""
+    out, stack = [], [resp]
+    while stack:
+        cur = stack.pop()
+        if isinstance(cur, list):
+            stack.extend(cur)
+        elif isinstance(cur, dict):
+            if isinstance(cur.get("calendarDate"), str):
+                out.append(cur)
+            else:
+                stack.extend(v for v in cur.values() if isinstance(v, (dict, list)))
+    return out
+
+
+def _chunks(start: date, end: date, days: int = 28):
     cur = start
     while cur <= end:
         stop = min(cur + timedelta(days=days - 1), end)
-        yield cur.isoformat(), stop.isoformat()
+        yield cur, stop
         cur = stop + timedelta(days=1)
 
 
-def fetch_daily(g: Garmin, start: date, end: date) -> dict[str, dict]:
-    """Per-day wellness: {date: {hrv, hrv_status, rhr, sleep_s, sleep_score, steps, step_goal}}."""
+# field candidates: {our key: (garmin field names...)}
+SUMMARY_FIELDS = {
+    "rhr": ("restingHeartRate", "restingHeartRateInBeatsPerMinute"),
+    "steps": ("totalSteps", "steps"),
+    "step_goal": ("dailyStepGoal", "stepGoal"),
+    "kcal_total": ("totalKilocalories", "totalCalories"),
+    "kcal_active": ("activeKilocalories", "activeCalories"),
+    "kcal_bmr": ("bmrKilocalories", "bmrCalories"),
+}
+SLEEP_FIELDS = {
+    "sleep_s": ("sleepTimeSeconds", "totalSleepTimeInSeconds", "durationInSeconds", "totalSleepSeconds"),
+    "sleep_score": ("overall", "sleepScore", "overallScore"),
+}
+
+
+def fetch_daily(c: GarminPersonalApiClient, start: date, end: date) -> dict[str, dict]:
+    """{date: {hrv, hrv_status, rhr, steps, step_goal, kcal_*, sleep_s, sleep_score}}."""
     days: dict[str, dict] = {}
 
     def put(d, key, value):
         if d and value is not None:
-            days.setdefault(d, {})[key] = value
+            days.setdefault(d[:10], {})[key] = value
 
-    for a, b in _chunks(start, end, 28):
-        hrv = g.get_hrv_data_range(a, b) or {}
-        for row in hrv.get("hrvSummaries") or []:
-            put(row.get("calendarDate"), "hrv", row.get("lastNightAvg"))
-            put(row.get("calendarDate"), "hrv_status", row.get("status"))
-
-    for row in g.get_rhr_daily(start.isoformat(), end.isoformat()):
-        put(row["calendarDate"], "rhr", row["value"])
-
-    for row in g.get_sleep_daily(start.isoformat(), end.isoformat()):
-        d = row.get("calendarDate")
-        secs = _find(row, "totalSleepTimeInSeconds", "sleepTimeSeconds", "totalSleepSeconds")
-        put(d, "sleep_s", secs)
-        put(d, "sleep_score", _find(row, "sleepScore", "overall", "sleepScoreValue"))
-
-    for row in g.get_daily_steps(start.isoformat(), end.isoformat()) or []:
-        d = row.get("calendarDate")
-        put(d, "steps", _find(row, "totalSteps", "steps"))
-        put(d, "step_goal", _find(row, "stepGoal", "dailyStepGoal"))
-
+    for a, b in _chunks(start, end):
+        for row in _rows(c.get_daily_summaries(a, b)):
+            for key, names in SUMMARY_FIELDS.items():
+                put(row["calendarDate"], key, _find(row, *names))
+        for row in _rows(c.get_daily_steps(a, b)):
+            put(row["calendarDate"], "steps", _find(row, "totalSteps", "steps"))
+            put(row["calendarDate"], "step_goal", _find(row, "stepGoal", "dailyStepGoal"))
+        for row in _rows(c.get_daily_hrv_summaries(a, b)):
+            put(row["calendarDate"], "hrv", _find(row, "lastNightAvg", "lastNightAverage"))
+            put(row["calendarDate"], "hrv_status", _find(row, "status"))
+        for row in _rows(c.get_daily_sleep_summaries(a, b)):
+            for key, names in SLEEP_FIELDS.items():
+                put(row["calendarDate"], key, _find(row, *names))
     return days
 
 
-def wear_segments(hr_day: dict, max_gap_ms: int = 10 * 60 * 1000) -> list[list[int]]:
+def wear_segments(hr_day, max_gap_ms: int = 10 * 60 * 1000) -> list[list[int]]:
     """Collapse a day's HR samples into [start_ms, end_ms] periods the watch was worn.
 
     Samples come every ~2 minutes while worn; a gap over `max_gap_ms` means it was off.
     """
-    ts = sorted(t for t, bpm in (hr_day or {}).get("heartRateValues") or [] if bpm)
+    values = (hr_day or {}).get("heartRateValues") or [] if isinstance(hr_day, dict) else []
+    ts = sorted(p[0] for p in values if isinstance(p, (list, tuple)) and len(p) > 1 and p[1])
     segs: list[list[int]] = []
     for t in ts:
         if segs and t - segs[-1][1] <= max_gap_ms:
@@ -100,27 +117,39 @@ def wear_segments(hr_day: dict, max_gap_ms: int = 10 * 60 * 1000) -> list[list[i
     return segs
 
 
-def fetch_wear(g: Garmin, start: date, end: date) -> dict[str, list[list[int]]]:
+def fetch_wear(c: GarminPersonalApiClient, start: date, end: date) -> dict[str, list[list[int]]]:
     """{date: wear segments}. One request per day, so callers keep the window short."""
     out = {}
     cur = start
     while cur <= end:
-        out[cur.isoformat()] = wear_segments(g.get_heart_rates(cur.isoformat()))
+        out[cur.isoformat()] = wear_segments(c.get_daily_heart_rate(cur))
         cur += timedelta(days=1)
     return out
 
 
-def fetch_activities(g: Garmin, start: date, end: date) -> list[dict]:
-    return [normalize_activity(a) for a in g.get_activities_by_date(start.isoformat(), end.isoformat())]
+def fetch_activities(c: GarminPersonalApiClient, start: date, end: date) -> list[dict]:
+    out, offset = [], 0
+    while True:
+        page = c.search_activities(start=offset, limit=100, start_date=start, end_date=end) or []
+        if isinstance(page, dict):  # tolerate a wrapped list
+            page = next((v for v in page.values() if isinstance(v, list)), [])
+        if not page:
+            break
+        out.extend(normalize_activity(a) for a in page)
+        offset += len(page)
+        if offset >= 2000:
+            break
+    return out
 
 
 def normalize_activity(a: dict) -> dict:
-    start = datetime.strptime(a["startTimeGMT"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    gmt = a.get("startTimeGMT") or a.get("startTimeLocal")
+    start = datetime.strptime(gmt[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     sport = ((a.get("activityType") or {}).get("typeKey") or "workout").replace("_", " ").title()
     return {
         "id": f"garmin:{a['activityId']}",
         "source": "garmin",
-        "date": (a.get("startTimeLocal") or a["startTimeGMT"])[:10],
+        "date": (a.get("startTimeLocal") or gmt)[:10],
         "start_utc": start.isoformat(),
         "sport": sport,
         "name": a.get("activityName") or "",
@@ -129,4 +158,35 @@ def normalize_activity(a: dict) -> dict:
         "avg_hr": a.get("averageHR"),
         "max_hr": a.get("maxHR"),
         "device_load": a.get("activityTrainingLoad"),
+        "kcal": a.get("calories"),
     }
+
+
+def probe(c: GarminPersonalApiClient, day: date) -> None:
+    """Print the field names (never values) each endpoint returns, to tune the parsers."""
+    a = day - timedelta(days=2)
+    calls = {
+        "daily_summaries": lambda: c.get_daily_summaries(a, day),
+        "daily_steps": lambda: c.get_daily_steps(a, day),
+        "hrv_summaries": lambda: c.get_daily_hrv_summaries(a, day),
+        "sleep_summaries": lambda: c.get_daily_sleep_summaries(a, day),
+        "daily_heart_rate": lambda: c.get_daily_heart_rate(day),
+        "activities": lambda: c.search_activities(start=0, limit=2, start_date=a, end_date=day),
+        "food_logs": lambda: c.get_daily_food_logs(day),
+    }
+
+    def shape(x, depth=0):
+        if depth > 3:
+            return "…"
+        if isinstance(x, dict):
+            return {k: shape(v, depth + 1) for k, v in list(x.items())[:40]}
+        if isinstance(x, list):
+            return [shape(x[0], depth + 1), f"({len(x)} items)"] if x else []
+        return type(x).__name__
+
+    for name, fn in calls.items():
+        try:
+            resp = fn()
+            print(f"--- {name}: {len(_rows(resp))} dated rows\n{shape(resp)}")
+        except Exception as e:  # noqa: BLE001
+            print(f"--- {name}: ERROR {type(e).__name__}: {str(e)[:200]}")

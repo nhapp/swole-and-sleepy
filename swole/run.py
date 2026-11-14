@@ -16,6 +16,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOKENS_PATH = os.path.join(ROOT, "state", "tokens.enc.json")
 DATA_PATH = os.path.join(ROOT, "site", "data.enc.json")
 CONFIG_PATH = os.path.join(ROOT, "config.json")
+GARMIN_KEY_ENV = "GARMIN_PERSONAL_API_KEY"
 
 
 def load_config() -> dict:
@@ -39,12 +40,14 @@ def _window(raw_key: str, store: dict, cfg: dict, today):
 def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
     """Fetch every configured source; one failing source never blocks the others."""
     status = {}
-    raw = store.setdefault("raw", {"days": {}, "activities": {}, "body": {}})
+    raw = store.setdefault("raw", {})
+    for k in ("days", "activities", "body", "nutrition"):
+        raw.setdefault(k, {})
     now = datetime.now(timezone.utc).isoformat()
 
     def run(name, fn):
         prev = store.get("meta", {}).get("sources", {}).get(name, {})
-        if name not in tokens:
+        if name not in tokens and not (name == "garmin" and os.environ.get(GARMIN_KEY_ENV)):
             status[name] = {"ok": False, "error": "not set up", "last_success": prev.get("last_success")}
             return
         try:
@@ -56,8 +59,7 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
                             "last_success": prev.get("last_success")}
 
     def do_garmin():
-        g = garmin.connect(tokens["garmin"])
-        try:
+        with garmin.connect(os.environ[GARMIN_KEY_ENV]) as g:
             start = _window("days", raw, cfg, today)
             for d, rec in garmin.fetch_daily(g, start, today).items():
                 raw["days"].setdefault(d, {}).update(rec)
@@ -67,8 +69,6 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
                 raw["days"].setdefault(d, {})["wear"] = segs
             for a in garmin.fetch_activities(g, _window("activities", raw, cfg, today), today):
                 raw["activities"][a["id"]] = a
-        finally:
-            tokens["garmin"] = garmin.dump_tokens(g)
 
     def do_strava():
         strava.ensure_fresh(tokens["strava"])
@@ -85,6 +85,9 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
     run("garmin", do_garmin)
     run("strava", do_strava)
     run("withings", do_withings)
+    # Nutrition arrives by import (python -m swole.nutrition), not in this job; keep its last status.
+    prev = store.get("meta", {}).get("sources", {})
+    status["nutrition"] = prev.get("nutrition") or {"ok": False, "error": "not set up", "last_success": None}
     return status
 
 
@@ -101,6 +104,10 @@ def build(store: dict, cfg: dict, status: dict, today) -> dict:
 
 def main() -> int:
     cfg = load_config()
+    if "--probe" in sys.argv:
+        with garmin.connect(os.environ[GARMIN_KEY_ENV]) as g:
+            garmin.probe(g, datetime.now(ZoneInfo(cfg["timezone"])).date())
+        return 0
     pw = passphrase()
     tz = ZoneInfo(cfg["timezone"])
     today = datetime.now(tz).date()
@@ -110,15 +117,15 @@ def main() -> int:
     try:
         status = pull(tokens, store, cfg, today, tz)
     finally:
-        # Providers rotate refresh tokens; losing a fresh one means re-running setup.
+        # Strava and Withings rotate refresh tokens; losing a fresh one means re-running setup.
         crypto.write_file(TOKENS_PATH, tokens, pw)
 
     crypto.write_file(DATA_PATH, build(store, cfg, status, today), pw)
     for name, s in status.items():
-        print(f"{name:9s} {'ok' if s['ok'] else 'FAILED: ' + s['error']}")
+        print(f"{name:9s} {'ok' if s['ok'] else 'not connected' if s['error'] == 'not set up' else 'FAILED: ' + s['error']}")
     g = store["derived"]["guidance"]
     print(f"Today: {g['headline']} — {g['detail']}")
-    failed = [n for n, s in status.items() if not s["ok"] and s["error"] != "not set up"]
+    failed = [n for n, s in status.items() if n != "nutrition" and not s["ok"] and s["error"] != "not set up"]
     return 2 if failed else 0
 
 

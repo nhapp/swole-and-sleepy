@@ -45,7 +45,10 @@ def test_calibrating_without_history():
 
 
 def test_stress_block_is_detected():
-    out = metrics.compute(synth(TODAY), CFG, TODAY)
+    raw = synth(TODAY)
+    for i in range(7):  # a hard week: HRV down, resting HR up, every night
+        raw["days"][(TODAY - timedelta(days=i)).isoformat()].update({"hrv": 42, "rhr": 59})
+    out = metrics.compute(raw, CFG, TODAY)
     rec, tr = out["recovery"], out["training"]
     assert rec["today"]["status"] in ("moderate", "low")
     assert tr["today"]["acwr"] > 1.0
@@ -120,3 +123,69 @@ def test_auto_sleep_source_prefers_garmin_then_proxy():
     days[wake.isoformat()]["sleep_s"] = 6 * 3600
     s = metrics.recovery(days, CFG, TODAY)["series"][-1]
     assert s["sleep_src"] == "garmin" and s["sleep_h"] == 6.0
+
+
+def test_swims_and_lifts_use_garmin_load_not_wrist_hr():
+    swim = {"sport": "Lap Swimming", "duration_s": 2700, "avg_hr": 95, "device_load": 70}
+    lift = {"sport": "Strength Training", "duration_s": 2400, "avg_hr": 100}
+    assert metrics.category(swim) == "swim" and metrics.category(lift) == "lift"
+    assert metrics.activity_load(swim, 169, 52, CFG, "swim") == (70.0, "garmin")
+    load, how = metrics.activity_load(lift, 169, 52, CFG, "lift")
+    assert how == "duration" and load == 40 * 1.2
+
+
+def test_long_run_and_max_hr_estimate():
+    assert metrics.category({"sport": "Running", "duration_s": 95 * 60}) == "long_run"
+    assert metrics.category({"sport": "Running", "duration_s": 45 * 60}) == "run"
+    assert metrics.max_hr({"age": 56}) == 169 and metrics.max_hr({"age": 56, "max_hr": 175}) == 175
+
+
+def test_targets_flex_by_day_type_protein_fixed():
+    rest = metrics.targets_for([], CFG)
+    long_day = metrics.targets_for(["lift", "long_run"], CFG)
+    assert rest["kcal"] == 2100 and rest["carbs_g"] == 210
+    assert long_day["kcal"] == 2750 and long_day["carbs_g"] == 370
+    assert rest["protein_g"] == long_day["protein_g"] == 150
+
+
+def test_nutrition_balance_and_protein_flag():
+    days, food = {}, {}
+    for i in range(1, 8):
+        ds = (TODAY - timedelta(days=i)).isoformat()
+        days[ds] = {"kcal_total": 2600}
+        food[ds] = {"kcal": 2100, "protein_g": 110, "carbs_g": 250, "fat_g": 70}
+    nu = metrics.nutrition(food, days, {}, CFG, TODAY)
+    assert nu["today"]["balance7"] == -500 and nu["today"]["implied_lb_wk"] == -1.0
+    assert "Protein under target" in {f["title"] for f in nu["flags"]}
+    assert nu["today"]["so_far"]["balance"] is None  # today is incomplete
+
+
+def test_body_fat_goal_implies_target_weight():
+    out = metrics.compute(synth(TODAY), CFG, TODAY)
+    t = out["body"]["today"]
+    g = t["goal"]
+    lean = out["body"]["series"][-1]["lean_trend"]
+    assert g["fat_pct"] == 17.5 and abs(g["weight_kg"] - lean / 0.825) < 0.1
+    assert t["ma7"] is not None
+
+
+def test_mfp_csv_sums_meals_per_day(tmp_path):
+    from swole.nutrition import parse_mfp_csv
+    p = tmp_path / "mfp.csv"
+    p.write_text("Date,Meal,Calories,Fat (g),Carbohydrates (g),Protein (g)\n"
+                 "2026-11-12,Breakfast,500,15,60,30\n2026-11-12,Dinner,\"1,200\",40,110,70\n"
+                 "11/13/2026,Lunch,700,20,80,45\n")
+    days = parse_mfp_csv(str(p))
+    assert days["2026-11-12"]["kcal"] == 1700 and days["2026-11-12"]["protein_g"] == 100
+    assert days["2026-11-13"]["fat_g"] == 20
+
+
+def test_garmin_row_finder_tolerates_nesting():
+    from swole.garmin import _find, _rows, wear_segments
+    resp = {"data": [{"calendarDate": "2026-11-12", "values": {"restingHeartRate": 52}},
+                     {"calendarDate": "2026-11-13", "restingHeartRate": 51}]}
+    rows = _rows(resp)
+    assert sorted(r["calendarDate"] for r in rows) == ["2026-11-12", "2026-11-13"]
+    assert {_find(r, "restingHeartRate") for r in rows} == {51, 52}
+    hr = {"heartRateValues": [[0, 60], [120_000, 61], [240_000, None], [3_000_000, 58]]}
+    assert wear_segments(hr) == [[0, 120_000], [3_000_000, 3_000_000]]

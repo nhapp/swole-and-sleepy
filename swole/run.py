@@ -66,7 +66,14 @@ def coverage(raw: dict) -> str:
         for k in rec:
             counts[k] = counts.get(k, 0) + 1
     fields = ", ".join(f"{k} {n}" for k, n in sorted(counts.items()))
-    return (f"days with: {fields or 'nothing'}; activities {len(raw.get('activities', {}))}; "
+    from .metrics import category
+
+    by: dict[str, int] = {}
+    for a in raw.get("activities", {}).values():
+        k = f"{a['source']} {category(a)}"
+        by[k] = by.get(k, 0) + 1
+    acts = ", ".join(f"{k} {n}" for k, n in sorted(by.items()))
+    return (f"days with: {fields or 'nothing'}; activities {len(raw.get('activities', {}))} ({acts}); "
             f"body readings {len(raw.get('body', {}))}; food days {len(raw.get('nutrition', {}))} "
             f"({sum('protein_g' in v for v in raw.get('nutrition', {}).values())} with protein)")
 

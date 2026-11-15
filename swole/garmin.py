@@ -216,12 +216,15 @@ def probe(c: GarminPersonalApiClient, day: date) -> None:
     }
 
     def shape(x, depth=0):
-        if depth > 3:
+        if depth > 4:
             return "…"
         if isinstance(x, dict):
             return {k: shape(v, depth + 1) for k, v in list(x.items())[:40]}
         if isinstance(x, list):
             return [shape(x[0], depth + 1), f"({len(x)} items)"] if x else []
+        if isinstance(x, (int, float)) and not isinstance(x, bool):
+            # Zero vs non-zero says whether a field carries data, without revealing the value.
+            return f"{type(x).__name__}({'0' if x == 0 else '>0' if x > 0 else '<0'})"
         return type(x).__name__
 
     for name, fn in calls.items():

@@ -2,10 +2,10 @@ name: Daily swole sync
 
 on:
   schedule:
-    # Four runs a day (UTC): ~7am, noon, 5pm and 9pm Eastern, so today's food and workouts show up.
-    # The 7am run carries last night's sleep and this morning's readiness.
-    - cron: "17 11,16,21 * * *"
-    - cron: "17 1 * * *"
+    # Four runs a day (UTC): ~7am, noon, 5pm and 9pm Pacific (an hour later in summer), so today's
+    # food and workouts show up. The 7am run carries last night's sleep and this morning's readiness.
+    - cron: "17 15,20 * * *"
+    - cron: "17 1,5 * * *"
   workflow_dispatch:
     inputs:
       probe:

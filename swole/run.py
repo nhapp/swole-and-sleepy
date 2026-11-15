@@ -37,6 +37,28 @@ def _window(raw_key: str, store: dict, cfg: dict, today):
     return today - timedelta(days=days)
 
 
+def wear_days(raw: dict, cfg: dict, today) -> list:
+    recent = cfg["fetch"]["lookback_days"]
+    backfill = cfg["fetch"]["wear_backfill_days"]
+    days = raw.get("days", {})
+    out = []
+    for i in range(backfill, -1, -1):
+        d = today - timedelta(days=i)
+        if i <= recent or "wear" not in days.get(d.isoformat(), {}):
+            out.append(d)
+    return out
+
+
+def coverage(raw: dict) -> str:
+    """How many days have each field: lets a log reader check parsing without seeing any values."""
+    counts: dict[str, int] = {}
+    for rec in raw.get("days", {}).values():
+        for k in rec:
+            counts[k] = counts.get(k, 0) + 1
+    fields = ", ".join(f"{k} {n}" for k, n in sorted(counts.items()))
+    return f"days with: {fields or 'nothing'}; activities {len(raw.get('activities', {}))}"
+
+
 def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
     """Fetch every configured source; one failing source never blocks the others."""
     status = {}
@@ -63,12 +85,13 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
             start = _window("days", raw, cfg, today)
             for d, rec in garmin.fetch_daily(g, start, today).items():
                 raw["days"].setdefault(d, {}).update(rec)
-            # Per-day HR requests: cap the backfill so the first run stays polite.
-            wear_start = max(start, today - timedelta(days=cfg["fetch"]["wear_backfill_days"]))
-            for d, segs in garmin.fetch_wear(g, wear_start, today).items():
-                raw["days"].setdefault(d, {})["wear"] = segs
             for a in garmin.fetch_activities(g, _window("activities", raw, cfg, today), today):
                 raw["activities"][a["id"]] = a
+            # Watch-wear needs one request per day. Fetch the recent days again (late syncs) plus any
+            # day in the backfill window not fetched yet, so an interrupted backfill resumes next run.
+            for d, segs in garmin.fetch_wear(g, wear_days(raw, cfg, today)):
+                raw["days"].setdefault(d, {})["wear"] = segs
+            print("garmin   " + coverage(raw))
 
     def do_strava():
         strava.ensure_fresh(tokens["strava"])

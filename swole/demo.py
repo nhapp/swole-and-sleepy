@@ -113,7 +113,7 @@ def synth(today: date, n_days: int = 200, seed: int = 7, tz: str = "America/New_
 def main():
     cfg = load_config()
     today = date.today()
-    raw = synth(today)
+    raw = synth(today, tz=cfg["timezone"])
     sources = {s: {"ok": True, "error": None, "last_success": datetime.now(timezone.utc).isoformat()}
                for s in ("garmin", "strava", "withings", "nutrition")}
     out = {"derived": metrics.compute(raw, cfg, today),

@@ -90,7 +90,7 @@ The importer sums meals per day. It matches column headers loosely, so other exp
 
 ## Day to day
 
-- The job runs four times a day (about 7am, noon, 5pm and 9pm Eastern). Edit the cron lines in `.github/workflows/daily.yml` to change that.
+- The job runs four times a day (about 7am, noon, 5pm and 9pm Pacific). Edit the cron lines in `.github/workflows/daily.yml` to change that.
 - The chips at the top of the page show when each source last synced.
 - If a source fails, everything else still saves, the run is marked failed, and GitHub emails you.
 - **Probe Garmin:** Actions → Daily swole sync → Run workflow → tick *probe*.

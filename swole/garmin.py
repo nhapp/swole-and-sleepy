@@ -8,18 +8,62 @@ values by a list of candidate field names, so small schema differences don't bre
 `python -m swole.run --probe` prints the field names each endpoint actually returns.
 """
 
+import json
 import os
 import tempfile
+import time
 from datetime import date, datetime, timedelta, timezone
 
-from garmin_personal_api import GarminPersonalApiClient, PersonalApiAuthenticator
+from garmin_personal_api import GarminPersonalApiClient, HttpError, PersonalApiAuthenticator
+
+# Garmin allows ~100 requests a minute; stay under it and wait out a 429 when it happens anyway.
+MIN_INTERVAL_S = 0.7
+MAX_RATE_LIMIT_RETRIES = 4
 
 
-def connect(api_key: str) -> GarminPersonalApiClient:
+class PacedClient:
+    """Wraps GarminPersonalApiClient: spaces requests out and retries on HTTP 429."""
+
+    def __init__(self, client: GarminPersonalApiClient, sleep=time.sleep, clock=time.monotonic):
+        self._client, self._sleep, self._clock = client, sleep, clock
+        self._last = float("-inf")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self._client.close()
+
+    def __getattr__(self, name):
+        fn = getattr(self._client, name)
+        if not callable(fn) or not (name.startswith("get") or name.startswith("search")):
+            return fn
+
+        def call(*args, **kwargs):
+            for attempt in range(MAX_RATE_LIMIT_RETRIES + 1):
+                wait = self._last + MIN_INTERVAL_S - self._clock()
+                if wait > 0:
+                    self._sleep(wait)
+                self._last = self._clock()
+                try:
+                    return fn(*args, **kwargs)
+                except HttpError as e:
+                    if e.status_code != 429 or attempt == MAX_RATE_LIMIT_RETRIES:
+                        raise
+                    try:
+                        retry = float(json.loads(e.response_text).get("retryInSeconds", 60))
+                    except (ValueError, TypeError, AttributeError):
+                        retry = 60.0
+                    self._sleep(retry + 2)
+
+        return call
+
+
+def connect(api_key: str) -> PacedClient:
     cache = os.path.join(tempfile.gettempdir(), "swole-garmin-token.json")
     with PersonalApiAuthenticator(bearer_token_cache_file=cache) as auth:
         token = auth.obtain_token(api_key)
-    return GarminPersonalApiClient(token.access_token)
+    return PacedClient(GarminPersonalApiClient(token.access_token))
 
 
 def _find(d, *keys):
@@ -117,14 +161,10 @@ def wear_segments(hr_day, max_gap_ms: int = 10 * 60 * 1000) -> list[list[int]]:
     return segs
 
 
-def fetch_wear(c: GarminPersonalApiClient, start: date, end: date) -> dict[str, list[list[int]]]:
-    """{date: wear segments}. One request per day, so callers keep the window short."""
-    out = {}
-    cur = start
-    while cur <= end:
-        out[cur.isoformat()] = wear_segments(c.get_daily_heart_rate(cur))
-        cur += timedelta(days=1)
-    return out
+def fetch_wear(c, days: list[date]):
+    """Yield (date, wear segments) one day at a time, so progress survives a later failure."""
+    for d in days:
+        yield d.isoformat(), wear_segments(c.get_daily_heart_rate(d))
 
 
 def fetch_activities(c: GarminPersonalApiClient, start: date, end: date) -> list[dict]:

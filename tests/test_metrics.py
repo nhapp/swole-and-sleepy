@@ -45,7 +45,7 @@ def test_calibrating_without_history():
 
 
 def test_stress_block_is_detected():
-    raw = synth(TODAY)
+    raw = synth(TODAY, tz=CFG['timezone'])
     for i in range(7):  # a hard week: HRV down, resting HR up, every night
         raw["days"][(TODAY - timedelta(days=i)).isoformat()].update({"hrv": 42, "rhr": 59})
     out = metrics.compute(raw, CFG, TODAY)
@@ -59,7 +59,7 @@ def test_stress_block_is_detected():
 
 
 def test_body_trend_and_rate():
-    out = metrics.compute(synth(TODAY), CFG, TODAY)
+    out = metrics.compute(synth(TODAY, tz=CFG['timezone']), CFG, TODAY)
     t = out["body"]["today"]
     assert -0.6 < t["rate_kg_wk"] < 0  # synthetic loss is ~0.25 kg/wk
     assert t["trend"] is not None and t["fat_change_kg"] < 0
@@ -72,7 +72,7 @@ def test_baseline_steady_state_scores_near_70():
     assert 55 <= rec["today"]["score"] <= 85 and rec["today"]["status"] in ("good", "moderate")
 
 
-def _ms(d: date, hhmm: str, tz="America/New_York"):
+def _ms(d: date, hhmm: str, tz=CFG["timezone"]):
     from datetime import datetime, time
     from zoneinfo import ZoneInfo
     return int(datetime.combine(d, time.fromisoformat(hhmm), ZoneInfo(tz)).timestamp() * 1000)
@@ -161,7 +161,7 @@ def test_nutrition_balance_and_protein_flag():
 
 
 def test_body_fat_goal_implies_target_weight():
-    out = metrics.compute(synth(TODAY), CFG, TODAY)
+    out = metrics.compute(synth(TODAY, tz=CFG['timezone']), CFG, TODAY)
     t = out["body"]["today"]
     g = t["goal"]
     lean = out["body"]["series"][-1]["lean_trend"]
@@ -189,3 +189,42 @@ def test_garmin_row_finder_tolerates_nesting():
     assert {_find(r, "restingHeartRate") for r in rows} == {51, 52}
     hr = {"heartRateValues": [[0, 60], [120_000, 61], [240_000, None], [3_000_000, 58]]}
     assert wear_segments(hr) == [[0, 120_000], [3_000_000, 3_000_000]]
+
+
+def test_paced_client_spaces_calls_and_waits_out_429():
+    from garmin_personal_api import HttpError
+    from swole.garmin import MIN_INTERVAL_S, PacedClient
+
+    now = [0.0]
+    slept = []
+
+    def sleep(s):
+        slept.append(round(s, 2))
+        now[0] += s
+
+    class Fake:
+        calls = 0
+
+        def get_daily_heart_rate(self, d):
+            Fake.calls += 1
+            if Fake.calls == 2:
+                raise HttpError(status_code=429, method="GET", url="u",
+                                response_text='{"count":101,"limit":100,"retryInSeconds":50}')
+            return {"ok": d}
+
+    c = PacedClient(Fake(), sleep=sleep, clock=lambda: now[0])
+    assert c.get_daily_heart_rate(1) == {"ok": 1}
+    assert c.get_daily_heart_rate(2) == {"ok": 2}  # 429 on first try, then succeeds
+    assert slept == [MIN_INTERVAL_S, 52.0]
+
+
+def test_wear_backfill_resumes_after_interruption():
+    from swole.run import wear_days
+    cfg = dict(CFG, fetch={"lookback_days": 10, "wear_backfill_days": 90})
+    # 60 old days already fetched (days 90..31 ago); the rest never were.
+    raw = {"days": {(TODAY - timedelta(days=i)).isoformat(): {"wear": []} for i in range(31, 91)}}
+    days = wear_days(raw, cfg, TODAY)
+    assert days[0] == TODAY - timedelta(days=30) and days[-1] == TODAY and len(days) == 31
+    # Fully fetched history: only the recent lookback window is re-pulled.
+    raw = {"days": {(TODAY - timedelta(days=i)).isoformat(): {"wear": []} for i in range(0, 91)}}
+    assert len(wear_days(raw, cfg, TODAY)) == 11

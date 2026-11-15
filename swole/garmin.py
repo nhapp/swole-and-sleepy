@@ -167,6 +167,32 @@ def fetch_wear(c, days: list[date]):
         yield d.isoformat(), wear_segments(c.get_daily_heart_rate(d))
 
 
+FOOD_FIELDS = {
+    "kcal": ("calories",),
+    "protein_g": ("protein", "proteinInGrams", "proteins"),
+    "carbs_g": ("carbohydrates", "carbs", "carbohydratesInGrams"),
+    "fat_g": ("fat", "fats", "fatInGrams", "totalFat"),
+}
+
+
+def food_day(resp) -> dict | None:
+    """Daily food totals from Garmin's food log, which MyFitnessPal feeds when the accounts are linked.
+
+    Today MFP passes only the calorie total; macros are read too in case Garmin starts carrying them.
+    """
+    content = (resp or {}).get("dailyNutritionContent") if isinstance(resp, dict) else None
+    if not isinstance(content, dict) or not content.get("calories"):
+        return None
+    out = {k: content.get(names[0]) if names[0] in content else _find(content, *names) for k, names in FOOD_FIELDS.items()}
+    return {k: round(v) for k, v in out.items() if isinstance(v, (int, float)) and v > 0} | {"source": "garmin-mfp"}
+
+
+def fetch_food(c, days: list[date]):
+    """Yield (date, totals or None) one day at a time."""
+    for d in days:
+        yield d.isoformat(), food_day(c.get_daily_food_logs(d))
+
+
 def fetch_activities(c: GarminPersonalApiClient, start: date, end: date) -> list[dict]:
     out, offset = [], 0
     while True:

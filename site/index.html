@@ -301,7 +301,7 @@ function renderSources() {
     const state = x.ok ? "good" : x.error === "not set up" ? "info" : "critical";
     const color = x.ok ? "--good" : x.error === "not set up" ? "--muted" : "--critical";
     const name = names[n];
-    const text = x.ok ? `${n === "nutrition" ? "imported" : "synced"} ${ago(x.last_success)}` : x.error === "not set up" ? "not connected" : `failed · last ok ${ago(x.last_success)}`;
+    const text = x.ok ? `${n === "nutrition" ? (x.via === "garmin" ? "via Garmin" : "imported") : "synced"} ${ago(x.last_success)}` : x.error === "not set up" ? "not connected" : `failed · last ok ${ago(x.last_success)}`;
     return `<span class="src" title="${esc(x.error || "")}"><span class="dot" style="background:var(${color})" aria-hidden="true"></span><b style="font-weight:600;color:var(--ink)">${name}</b> ${text}<span class="sr-only" hidden>${state}</span></span>`;
   }).join("");
 }
@@ -393,6 +393,7 @@ function renderNutrition() {
       ${macroRow("Carbs", y.carbs_g, y.t_carbs_g, "g")}
       ${macroRow("Fat", y.fat_g, y.t_fat_g, "g")}
     </div>
+    ${y.protein_g == null && y.kcal != null ? `<p class="muted" style="margin:0;font-size:12.5px">MyFitnessPal's Garmin link sends calories only. Protein, carbs and fat arrive with the MyFitnessPal API or a CSV import.</p>` : ""}
     <div class="rows">
       <div class="row"><span class="k">7-day average</span><span class="val">${f(a.kcal)} kcal · ${f(a.protein_g)} g protein</span>
         <span class="sub">${a.logged_days} of 7 days logged · protein ${t.protein_pct7 == null ? "–" : f(t.protein_pct7) + "%"} of target</span></div>

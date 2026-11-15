@@ -249,3 +249,24 @@ def test_backfill_reruns_for_mostly_missing_field():
     for v in days.values():
         v["rhr"] = 50
     assert not _mostly_missing(days, ("rhr", "steps"), cfg, TODAY)
+
+
+def test_garmin_food_log_calories_only():
+    from swole.garmin import food_day
+    resp = {"dailyNutritionGoals": {"calories": 2350}, "dailyNutritionContent": {"calories": 1840, "caloriesPercentage": 78.3},
+            "mealDetails": [], "loggedFoodsWithServingSizes": []}
+    assert food_day(resp) == {"kcal": 1840, "source": "garmin-mfp"}
+    assert food_day({"dailyNutritionContent": {"calories": 0}}) is None
+    with_macros = {"dailyNutritionContent": {"calories": 2000, "protein": 140.4, "carbohydrates": 230, "fat": 70}}
+    assert food_day(with_macros) == {"kcal": 2000, "protein_g": 140, "carbs_g": 230, "fat_g": 70, "source": "garmin-mfp"}
+
+
+def test_nutrition_without_protein_skips_protein_flag():
+    days, food = {}, {}
+    for i in range(1, 8):
+        ds = (TODAY - timedelta(days=i)).isoformat()
+        days[ds] = {"kcal_total": 2500}
+        food[ds] = {"kcal": 2200, "source": "garmin-mfp"}
+    nu = metrics.nutrition(food, days, {}, CFG, TODAY)
+    assert nu["today"]["balance7"] == -300 and nu["today"]["protein_pct7"] is None
+    assert "Protein under target" not in {f["title"] for f in nu["flags"]}

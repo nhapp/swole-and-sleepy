@@ -42,16 +42,21 @@ def _mostly_missing(days: dict, keys, cfg: dict, today) -> bool:
     return any(sum(k in days.get(d, {}) for d in span) < len(span) / 2 for k in keys)
 
 
-def wear_days(raw: dict, cfg: dict, today) -> list:
+def per_day_window(raw: dict, cfg: dict, today, marker: str, backfill: int) -> list:
+    """Days to fetch for a one-request-per-day endpoint: the recent lookback window (late syncs),
+    plus any day in the backfill window not fetched yet, so an interrupted backfill resumes."""
     recent = cfg["fetch"]["lookback_days"]
-    backfill = cfg["fetch"]["wear_backfill_days"]
     days = raw.get("days", {})
     out = []
     for i in range(backfill, -1, -1):
         d = today - timedelta(days=i)
-        if i <= recent or "wear" not in days.get(d.isoformat(), {}):
+        if i <= recent or marker not in days.get(d.isoformat(), {}):
             out.append(d)
     return out
+
+
+def wear_days(raw: dict, cfg: dict, today) -> list:
+    return per_day_window(raw, cfg, today, "wear", cfg["fetch"]["wear_backfill_days"])
 
 
 def coverage(raw: dict) -> str:
@@ -62,7 +67,8 @@ def coverage(raw: dict) -> str:
             counts[k] = counts.get(k, 0) + 1
     fields = ", ".join(f"{k} {n}" for k, n in sorted(counts.items()))
     return (f"days with: {fields or 'nothing'}; activities {len(raw.get('activities', {}))}; "
-            f"body readings {len(raw.get('body', {}))}; food days {len(raw.get('nutrition', {}))}")
+            f"body readings {len(raw.get('body', {}))}; food days {len(raw.get('nutrition', {}))} "
+            f"({sum('protein_g' in v for v in raw.get('nutrition', {}).values())} with protein)")
 
 
 def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
@@ -86,6 +92,8 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
             status[name] = {"ok": False, "error": f"{type(e).__name__}: {e}"[:300],
                             "last_success": prev.get("last_success")}
 
+    garmin_food = [False]
+
     def do_garmin():
         with garmin.connect(os.environ[GARMIN_KEY_ENV]) as g:
             start = _window("days", raw, cfg, today)
@@ -96,9 +104,17 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
                 raw["days"].setdefault(d, {}).update(rec)
             for a in garmin.fetch_activities(g, _window("activities", raw, cfg, today), today):
                 raw["activities"][a["id"]] = a
+            # Food totals that MyFitnessPal syncs into Garmin. A CSV import or the MFP API, which
+            # carry macros, take precedence over these calorie-only rows.
+            for d, food in garmin.fetch_food(g, per_day_window(raw, cfg, today, "food_checked", 30)):
+                raw["days"].setdefault(d, {})["food_checked"] = True
+                current = raw["nutrition"].get(d, {})
+                if food and current.get("source", "garmin-mfp") == "garmin-mfp":
+                    raw["nutrition"][d] = food
+                    garmin_food[0] = True
             # Watch-wear needs one request per day. Fetch the recent days again (late syncs) plus any
             # day in the backfill window not fetched yet, so an interrupted backfill resumes next run.
-            for d, segs in garmin.fetch_wear(g, wear_days(raw, cfg, today)):
+            for d, segs in garmin.fetch_wear(g, per_day_window(raw, cfg, today, "wear", cfg["fetch"]["wear_backfill_days"])):
                 raw["days"].setdefault(d, {})["wear"] = segs
         
     def do_strava():
@@ -120,6 +136,8 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
     # Nutrition arrives by import (python -m swole.nutrition), not in this job; keep its last status.
     prev = store.get("meta", {}).get("sources", {})
     status["nutrition"] = prev.get("nutrition") or {"ok": False, "error": "not set up", "last_success": None}
+    if garmin_food[0]:
+        status["nutrition"] = {"ok": True, "error": None, "last_success": now, "via": "garmin"}
     return status
 
 

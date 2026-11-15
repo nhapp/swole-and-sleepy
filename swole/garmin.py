@@ -108,12 +108,12 @@ def _chunks(start: date, end: date, days: int = 28):
 
 # field candidates: {our key: (garmin field names...)}
 SUMMARY_FIELDS = {
-    "rhr": ("restingHeartRate", "restingHeartRateInBeatsPerMinute"),
+    "rhr": ("restingValue", "restingHeartRate", "restingHeartRateInBeatsPerMinute"),
     "steps": ("totalSteps", "steps"),
     "step_goal": ("dailyStepGoal", "stepGoal"),
-    "kcal_total": ("totalKilocalories", "totalCalories"),
-    "kcal_active": ("activeKilocalories", "activeCalories"),
-    "kcal_bmr": ("bmrKilocalories", "bmrCalories"),
+    "kcal_total": ("burnedTotal", "totalKilocalories", "totalCalories"),
+    "kcal_active": ("burnedActive", "activeKilocalories", "activeCalories"),
+    "kcal_bmr": ("burnedResting", "bmrKilocalories", "bmrCalories"),
 }
 SLEEP_FIELDS = {
     "sleep_s": ("sleepTimeSeconds", "totalSleepTimeInSeconds", "durationInSeconds", "totalSleepSeconds"),

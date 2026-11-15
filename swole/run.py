@@ -37,6 +37,11 @@ def _window(raw_key: str, store: dict, cfg: dict, today):
     return today - timedelta(days=days)
 
 
+def _mostly_missing(days: dict, keys, cfg: dict, today) -> bool:
+    span = [(today - timedelta(days=i)).isoformat() for i in range(1, cfg["fetch"]["backfill_days"] + 1)]
+    return any(sum(k in days.get(d, {}) for d in span) < len(span) / 2 for k in keys)
+
+
 def wear_days(raw: dict, cfg: dict, today) -> list:
     recent = cfg["fetch"]["lookback_days"]
     backfill = cfg["fetch"]["wear_backfill_days"]
@@ -83,6 +88,9 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
     def do_garmin():
         with garmin.connect(os.environ[GARMIN_KEY_ENV]) as g:
             start = _window("days", raw, cfg, today)
+            # A field that's mostly missing (new, or first parsed wrong) gets the full backfill again.
+            if _mostly_missing(raw["days"], ("rhr", "steps", "kcal_total"), cfg, today):
+                start = today - timedelta(days=cfg["fetch"]["backfill_days"])
             for d, rec in garmin.fetch_daily(g, start, today).items():
                 raw["days"].setdefault(d, {}).update(rec)
             for a in garmin.fetch_activities(g, _window("activities", raw, cfg, today), today):

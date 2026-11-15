@@ -228,3 +228,24 @@ def test_wear_backfill_resumes_after_interruption():
     # Fully fetched history: only the recent lookback window is re-pulled.
     raw = {"days": {(TODAY - timedelta(days=i)).isoformat(): {"wear": []} for i in range(0, 91)}}
     assert len(wear_days(raw, cfg, TODAY)) == 11
+
+
+def test_garmin_daily_summary_v2_shape():
+    from swole.garmin import SUMMARY_FIELDS, _find, _rows
+    resp = {"data": [{"calendarDate": "2026-11-14", "movement": {"steps": 9000},
+                      "calories": {"burnedResting": 1600, "burnedActive": 700, "burnedTotal": 2300},
+                      "heartRate": {"minValue": 48, "maxValue": 150, "restingValue": 52}}]}
+    row = _rows(resp)[0]
+    got = {k: _find(row, *names) for k, names in SUMMARY_FIELDS.items()}
+    assert got["rhr"] == 52 and got["kcal_total"] == 2300 and got["kcal_active"] == 700 and got["kcal_bmr"] == 1600
+    assert got["steps"] == 9000
+
+
+def test_backfill_reruns_for_mostly_missing_field():
+    from swole.run import _mostly_missing
+    cfg = dict(CFG, fetch={"backfill_days": 180, "lookback_days": 10, "wear_backfill_days": 90})
+    days = {(TODAY - timedelta(days=i)).isoformat(): {"steps": 1} for i in range(1, 181)}
+    assert _mostly_missing(days, ("rhr", "steps"), cfg, TODAY)
+    for v in days.values():
+        v["rhr"] = 50
+    assert not _mostly_missing(days, ("rhr", "steps"), cfg, TODAY)

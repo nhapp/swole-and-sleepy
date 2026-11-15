@@ -270,3 +270,11 @@ def test_nutrition_without_protein_skips_protein_flag():
     nu = metrics.nutrition(food, days, {}, CFG, TODAY)
     assert nu["today"]["balance7"] == -300 and nu["today"]["protein_pct7"] is None
     assert "Protein under target" not in {f["title"] for f in nu["flags"]}
+
+
+def test_new_source_gets_its_own_backfill():
+    from swole.run import _window
+    cfg = dict(CFG, fetch={"backfill_days": 180, "lookback_days": 10, "wear_backfill_days": 90})
+    raw = {"activities": {"garmin:1": {"source": "garmin"}}}
+    assert _window("activities", raw, cfg, TODAY, "garmin") == TODAY - timedelta(days=10)
+    assert _window("activities", raw, cfg, TODAY, "strava") == TODAY - timedelta(days=180)

@@ -31,9 +31,12 @@ def passphrase() -> str:
     return p
 
 
-def _window(raw_key: str, store: dict, cfg: dict, today):
-    """Backfill on first run, otherwise re-pull a short lookback so late syncs land."""
-    days = cfg["fetch"]["lookback_days"] if store.get(raw_key) else cfg["fetch"]["backfill_days"]
+def _window(raw_key: str, store: dict, cfg: dict, today, source: str | None = None):
+    """Backfill on a source's first run, otherwise re-pull a short lookback so late syncs land."""
+    have = store.get(raw_key)
+    if source and have:
+        have = any(r.get("source") == source for r in have.values())
+    days = cfg["fetch"]["lookback_days"] if have else cfg["fetch"]["backfill_days"]
     return today - timedelta(days=days)
 
 
@@ -73,6 +76,12 @@ def coverage(raw: dict) -> str:
         k = f"{a['source']} {category(a)}"
         by[k] = by.get(k, 0) + 1
     acts = ", ".join(f"{k} {n}" for k, n in sorted(by.items()))
+    other: dict[str, int] = {}
+    for a in raw.get("activities", {}).values():
+        if category(a) == "other":
+            other[a["sport"]] = other.get(a["sport"], 0) + 1
+    if other:
+        acts += "; other = " + ", ".join(f"{k} {n}" for k, n in sorted(other.items(), key=lambda x: -x[1]))
     return (f"days with: {fields or 'nothing'}; activities {len(raw.get('activities', {}))} ({acts}); "
             f"body readings {len(raw.get('body', {}))}; food days {len(raw.get('nutrition', {}))} "
             f"({sum('protein_g' in v for v in raw.get('nutrition', {}).values())} with protein)")
@@ -109,7 +118,7 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
                 start = today - timedelta(days=cfg["fetch"]["backfill_days"])
             for d, rec in garmin.fetch_daily(g, start, today).items():
                 raw["days"].setdefault(d, {}).update(rec)
-            for a in garmin.fetch_activities(g, _window("activities", raw, cfg, today), today):
+            for a in garmin.fetch_activities(g, _window("activities", raw, cfg, today, "garmin"), today):
                 raw["activities"][a["id"]] = a
             # Food totals that MyFitnessPal syncs into Garmin. A CSV import or the MFP API, which
             # carry macros, take precedence over these calorie-only rows.
@@ -126,7 +135,7 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
         
     def do_strava():
         strava.ensure_fresh(tokens["strava"])
-        since = datetime.combine(_window("activities", raw, cfg, today), datetime.min.time(), tz)
+        since = datetime.combine(_window("activities", raw, cfg, today, "strava"), datetime.min.time(), tz)
         for a in strava.fetch_activities(tokens["strava"], since):
             raw["activities"][a["id"]] = a
 

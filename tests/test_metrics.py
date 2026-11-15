@@ -278,3 +278,13 @@ def test_new_source_gets_its_own_backfill():
     raw = {"activities": {"garmin:1": {"source": "garmin"}}}
     assert _window("activities", raw, cfg, TODAY, "garmin") == TODAY - timedelta(days=10)
     assert _window("activities", raw, cfg, TODAY, "strava") == TODAY - timedelta(days=180)
+
+
+def test_source_with_only_recent_records_is_backfilled():
+    from swole.run import _window
+    cfg = dict(CFG, fetch={"backfill_days": 180, "lookback_days": 10, "wear_backfill_days": 90})
+    recent = (TODAY - timedelta(days=3)).isoformat()
+    old = (TODAY - timedelta(days=120)).isoformat()
+    raw = {"activities": {"strava:1": {"source": "strava", "date": recent}, "garmin:1": {"source": "garmin", "date": old}}}
+    assert _window("activities", raw, cfg, TODAY, "strava") == TODAY - timedelta(days=180)
+    assert _window("activities", raw, cfg, TODAY, "garmin") == TODAY - timedelta(days=10)

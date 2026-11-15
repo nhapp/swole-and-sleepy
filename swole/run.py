@@ -35,7 +35,9 @@ def _window(raw_key: str, store: dict, cfg: dict, today, source: str | None = No
     """Backfill on a source's first run, otherwise re-pull a short lookback so late syncs land."""
     have = store.get(raw_key)
     if source and have:
-        have = any(r.get("source") == source for r in have.values())
+        # A source whose records all sit inside the lookback window has never had its history pulled.
+        oldest = min((r.get("date", "9999") for r in have.values() if r.get("source") == source), default=None)
+        have = oldest is not None and oldest < (today - timedelta(days=cfg["fetch"]["lookback_days"])).isoformat()
     days = cfg["fetch"]["lookback_days"] if have else cfg["fetch"]["backfill_days"]
     return today - timedelta(days=days)
 

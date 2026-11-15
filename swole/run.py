@@ -61,7 +61,8 @@ def coverage(raw: dict) -> str:
         for k in rec:
             counts[k] = counts.get(k, 0) + 1
     fields = ", ".join(f"{k} {n}" for k, n in sorted(counts.items()))
-    return f"days with: {fields or 'nothing'}; activities {len(raw.get('activities', {}))}"
+    return (f"days with: {fields or 'nothing'}; activities {len(raw.get('activities', {}))}; "
+            f"body readings {len(raw.get('body', {}))}; food days {len(raw.get('nutrition', {}))}")
 
 
 def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
@@ -99,8 +100,7 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
             # day in the backfill window not fetched yet, so an interrupted backfill resumes next run.
             for d, segs in garmin.fetch_wear(g, wear_days(raw, cfg, today)):
                 raw["days"].setdefault(d, {})["wear"] = segs
-            print("garmin   " + coverage(raw))
-
+        
     def do_strava():
         strava.ensure_fresh(tokens["strava"])
         since = datetime.combine(_window("activities", raw, cfg, today), datetime.min.time(), tz)
@@ -116,6 +116,7 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
     run("garmin", do_garmin)
     run("strava", do_strava)
     run("withings", do_withings)
+    print("coverage " + coverage(raw))
     # Nutrition arrives by import (python -m swole.nutrition), not in this job; keep its last status.
     prev = store.get("meta", {}).get("sources", {})
     status["nutrition"] = prev.get("nutrition") or {"ok": False, "error": "not set up", "last_success": None}

@@ -6,6 +6,11 @@
 <title>Swole &amp; Sleepy</title>
 <meta name="claude:viewport-fit-sides" content="cover">
 <meta name="robots" content="noindex">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#1f4385">
+<meta name="apple-mobile-web-app-title" content="Swole &amp; Sleepy">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&family=Martian+Mono:wght@400;500&display=swap">
@@ -68,7 +73,7 @@ a { color: var(--accent); }
 /* Top bar */
 .top { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; }
 .brand { display: flex; align-items: center; gap: 10px; }
-.brand svg { flex: none; }
+.brand .logo { flex: none; display: block; border-radius: 8px; }
 .tagline { font-size: 12.5px; color: var(--muted); }
 .sources { display: flex; flex-wrap: wrap; gap: 8px; }
 .src { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--line);
@@ -85,6 +90,24 @@ a { color: var(--accent); }
   font: 500 12px/1.4 var(--font-data); text-transform: uppercase; letter-spacing: 0.06em;
   background: color-mix(in srgb, var(--status) 16%, transparent); color: var(--status-ink, var(--ink)); }
 .ring { width: 64px; height: 64px; grid-row: span 3; }
+.call .chips { grid-column: 2; }
+@media (max-width: 560px) { .call .chips { grid-column: 1; } }
+
+/* Day navigator */
+.daynav { display: flex; align-items: center; gap: 8px; margin-bottom: -14px; min-width: 0; }
+.navbtn, .todaybtn { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; color: var(--ink); }
+.navbtn { width: 34px; height: 46px; font-size: 22px; line-height: 1; }
+.navbtn:disabled { opacity: .35; cursor: default; }
+.todaybtn { height: 34px; padding: 0 12px; font-size: 13px; font-weight: 600; color: var(--accent); }
+.strip { flex: 1; min-width: 0; display: flex; gap: 4px; overflow-x: auto; scroll-behavior: smooth; scrollbar-width: none; padding: 2px; }
+.strip::-webkit-scrollbar { display: none; }
+.daypip { flex: none; width: 38px; display: grid; justify-items: center; gap: 3px; padding: 5px 0 6px; border-radius: 8px;
+  border: 1px solid transparent; background: none; color: var(--ink-2); font: 500 11px/1.1 var(--font-data); }
+.daypip b { font: 600 14px/1.1 var(--font-ui); color: var(--ink); }
+.daypip i { width: 18px; height: 5px; border-radius: 3px; background: var(--pip, var(--grid)); }
+.daypip:hover { background: var(--accent-wash); }
+.daypip[aria-selected="true"] { background: var(--surface); border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+@media (prefers-reduced-motion: reduce) { .strip { scroll-behavior: auto; } }
 @media (max-width: 560px) { .call { grid-template-columns: 1fr; } .ring { grid-row: auto; } }
 
 /* Signal panels */
@@ -180,7 +203,7 @@ th { font: 500 11px var(--font-data); text-transform: uppercase; letter-spacing:
 <div class="wrap">
   <div class="top">
     <div class="brand">
-      <svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><path d="M1 12h4l2.5-6 4 11 3-8 1.5 3H21" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <img class="logo" src="favicon.svg" width="34" height="34" alt="">
       <div><h1>Swole &amp; Sleepy</h1><div class="tagline">How fit, how tired, and what to do about it today</div></div>
     </div>
     <div class="sources" id="sources"></div>
@@ -201,6 +224,12 @@ th { font: 500 11px var(--font-data); text-transform: uppercase; letter-spacing:
 
   <div id="app" hidden style="display:grid;gap:28px">
     <div id="demoBanner" class="demo-banner" hidden>Showing synthetic sample data, not yours. It includes a hard training block in the last 10 days so the warnings have something to show.</div>
+    <nav class="daynav" id="daynav" aria-label="Choose a day" hidden>
+      <button type="button" class="navbtn" id="dayPrev" aria-label="Previous day">‹</button>
+      <div class="strip" id="dayStrip" role="listbox" aria-label="Readiness by day"></div>
+      <button type="button" class="navbtn" id="dayNext" aria-label="Next day">›</button>
+      <button type="button" class="todaybtn" id="dayToday" hidden>Today</button>
+    </nav>
     <section class="call" id="call" aria-live="polite"></section>
     <section class="panels">
       <article class="panel" id="pRecovery"></article>
@@ -306,8 +335,53 @@ function renderSources() {
   }).join("");
 }
 
+// ---------- day navigation ----------
+let SEL = null; // selected date (ISO); null = today
+const calls = () => DATA.derived.calls || [];
+const selDate = () => SEL || DATA.meta.today;
+const isToday = () => selDate() === DATA.meta.today;
+const NAV_DAYS = 42;
+
+function renderNav() {
+  const list = calls().slice(-NAV_DAYS);
+  const nav = $("#daynav");
+  nav.hidden = list.length < 2;
+  if (nav.hidden) return;
+  const cur = selDate();
+  $("#dayStrip").innerHTML = list.map((c) => {
+    const st = STATUS[c.status] || STATUS.calibrating;
+    const d = new Date(c.date + "T12:00:00");
+    const label = `${dlabel(c.date, { weekday: "long", month: "long", day: "numeric" })}: ${c.headline}${c.score == null ? "" : ", readiness " + c.score}`;
+    return `<button type="button" class="daypip" role="option" data-date="${c.date}" aria-selected="${c.date === cur}" aria-label="${esc(label)}" title="${esc(label)}" style="--pip:var(${st.c})">
+      ${d.toLocaleDateString(undefined, { weekday: "narrow" })}<b>${d.getDate()}</b><i></i></button>`;
+  }).join("");
+  const idx = list.findIndex((c) => c.date === cur);
+  $("#dayPrev").disabled = idx <= 0;
+  $("#dayNext").disabled = idx < 0 || idx >= list.length - 1;
+  $("#dayToday").hidden = isToday();
+  const pip = $("#dayStrip").querySelector('[aria-selected="true"]');
+  // Scroll only the strip (scrollIntoView would also nudge the page).
+  if (pip) { const st = $("#dayStrip"); st.scrollLeft = pip.offsetLeft - st.offsetLeft - (st.clientWidth - pip.offsetWidth) / 2; }
+}
+
+function selectDay(date) {
+  SEL = date === DATA.meta.today ? null : date;
+  renderNav(); renderCall(); renderRecovery();
+}
+
+function stepDay(delta) {
+  const list = calls().slice(-NAV_DAYS);
+  const idx = list.findIndex((c) => c.date === selDate());
+  const next = list[Math.max(0, Math.min(list.length - 1, idx + delta))];
+  if (next) selectDay(next.date);
+}
+
 function renderCall() {
-  const g = DATA.derived.guidance, r = DATA.derived.recovery.today;
+  const today = isToday();
+  const call = calls().find((c) => c.date === selDate());
+  const g = today || !call ? DATA.derived.guidance : call;
+  const r = today || !call ? DATA.derived.recovery.today : { score: call.score };
+  const dayFlags = !today && call ? call.flags : [];
   const st = STATUS[g.status] || STATUS.calibrating;
   const el = $("#call");
   el.style.setProperty("--status", `var(${st.c})`);
@@ -323,11 +397,12 @@ function renderCall() {
     </svg>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span class="pill">${icon(g.status === "calibrating" ? "calibrating" : g.status, 14)} ${st.label}</span>
-      <span class="label">${dlabel(DATA.meta.today, { weekday: "long", month: "long", day: "numeric" })}</span>
+      <span class="label">${today ? "Today · " : ""}${dlabel(selDate(), { weekday: "long", month: "long", day: "numeric" })}</span>
     </div>
-    <div class="headline">${esc(g.headline)}</div>
+    <div class="headline">${esc(today ? g.headline : g.headline.replace(/ today\b/i, ""))}</div>
     <div class="detail">${esc(g.detail)}</div>
-    ${todayTargets()}`;
+    ${dayFlags.length ? `<div class="chips">${dayFlags.map((x) => `<span class="chip">${icon(x.level, 12)} ${esc(x.title)}</span>`).join("")}</div>` : ""}
+    ${today ? todayTargets() : ""}`;
 }
 
 const TYPE_LABEL = { rest: "Rest", swim: "Swim", run: "Run", long_run: "Long run", lift: "Lift", cycle: "Cycle" };
@@ -346,24 +421,29 @@ function bandMeter(value, min, max, bands) {
 }
 
 function renderRecovery() {
-  const R = DATA.derived.recovery, t = R.today, rc = CFG.recovery;
+  const R = DATA.derived.recovery, rc = CFG.recovery;
+  const today = isToday();
+  const picked = !today && R.series.find((s) => s.date === selDate());
+  const t = picked ? { score: picked.score, components: picked.components, sleep_debt_h: picked.sleep_debt_h, date: picked.date } : R.today;
   const last = R.series.filter((s) => s.date <= t.date).slice(-1)[0] || {};
   const c = t.components || {};
   const zTxt = (z, unit, inv) => z == null ? "" : `${signed(z, 1)} SD vs your ${rc.baseline_days}-day baseline${inv ? "" : ""}`;
   $("#pRecovery").innerHTML = `
-    <div class="panel-head"><h3>Recovery</h3><span class="label">Garmin</span></div>
+    <div class="panel-head"><h3>Recovery</h3><span class="label">${picked ? dlabel(picked.date) : "Garmin"}</span></div>
     <div class="hero"><span class="v num">${t.score ?? "–"}</span><span class="u">/ 100 readiness</span></div>
     ${bandMeter(t.score, 0, 100, [[0, 45, "--critical"], [45, 65, "--warning"], [65, 100, "--good"]])}
     <div class="scale"><span>0</span><span>45</span><span>65</span><span>100</span></div>
     <div class="rows">
-      <div class="row"><span class="k">HRV last night</span><span class="val">${f(last.hrv)} ms</span>
+      <div class="row"><span class="k">HRV ${picked ? "that night" : "last night"}</span><span class="val">${f(last.hrv)} ms</span>
         <span class="sub">${last.hrv_lo ? `Normal range ${f(last.hrv_lo)}–${f(last.hrv_hi)} ms · 7-day avg ${f(last.hrv7)}` : "Building baseline"}${c.hrv ? ` · ${zTxt(c.hrv.z)}` : ""}</span></div>
       <div class="row"><span class="k">Resting HR</span><span class="val">${f(last.rhr)} bpm</span>
         <span class="sub">${last.rhr_base ? `Baseline ${f(last.rhr_base)} bpm · 3-day avg ${f(last.rhr3)}` : "Building baseline"}</span></div>
       <div class="row"><span class="k">Sleep${last.sleep_src === "proxy" ? " (watch-off estimate)" : last.sleep_src === "garmin" ? " (Garmin)" : ""}</span><span class="val">${last.sleep_h ? hm(last.sleep_h * 3600) : "–"}</span>
         <span class="sub">${last.proxy ? `Watch off ${last.proxy.off}, back on ${last.proxy.on} → asleep ≈ ${last.proxy.asleep}–${last.proxy.wake} · ` : ""}Target ${rc.sleep_target_hours} h${last.sleep_src === "garmin" && last.sleep_score ? ` · sleep score ${last.sleep_score}` : ""} · 7-night debt ${f(t.sleep_debt_h, 1)} h</span></div>
-      <div class="row"><span class="k">Steps</span><span class="val">${f(t.steps_7d_avg)} / day</span>
-        <span class="sub">7-day average of complete days · goal ${f(CFG.activity.steps_goal)} · today so far ${f(last.date === DATA.meta.today ? last.steps : null)}</span></div>
+      ${picked ? `<div class="row"><span class="k">Steps</span><span class="val">${f(picked.steps)}</span>
+        <span class="sub">7-day average ${f(picked.steps7)} · goal ${f(CFG.activity.steps_goal)}</span></div>`
+      : `<div class="row"><span class="k">Steps</span><span class="val">${f(t.steps_7d_avg)} / day</span>
+        <span class="sub">7-day average of complete days · goal ${f(CFG.activity.steps_goal)} · today so far ${f(last.date === DATA.meta.today ? last.steps : null)}</span></div>`}
     </div>`;
 }
 
@@ -707,12 +787,21 @@ function renderAssumptions() {
 function renderAll() {
   CFG = DATA.meta.config; IMPERIAL = CFG.units === "imperial";
   $("#demoBanner").hidden = !DATA.meta.demo;
-  renderSources(); renderCall(); renderRecovery(); renderNutrition(); renderTraining(); renderBody(); renderFlags(); renderActivities(); renderAssumptions();
+  renderSources(); renderNav(); renderCall(); renderRecovery(); renderNutrition(); renderTraining(); renderBody(); renderFlags(); renderActivities(); renderAssumptions();
   $("#lock").hidden = true; $("#app").hidden = false;
   renderCharts();
 }
 
 // ---------- boot ----------
+$("#dayPrev").addEventListener("click", () => stepDay(-1));
+$("#dayNext").addEventListener("click", () => stepDay(1));
+$("#dayToday").addEventListener("click", () => selectDay(DATA.meta.today));
+$("#dayStrip").addEventListener("click", (e) => { const b = e.target.closest(".daypip"); if (b) selectDay(b.dataset.date); });
+addEventListener("keydown", (e) => {
+  if (!DATA || $("#app").hidden || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
+  if (e.key === "ArrowLeft") { stepDay(-1); e.preventDefault(); }
+  if (e.key === "ArrowRight") { stepDay(1); e.preventDefault(); }
+});
 document.querySelectorAll("#range button").forEach((b) => b.addEventListener("click", () => {
   RANGE = Number(b.dataset.d); store.set("hd.range", String(RANGE)); renderCharts();
 }));

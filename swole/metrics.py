@@ -165,27 +165,18 @@ def recovery(days: dict, cfg: dict, today: date) -> dict:
             }
         )
 
+    # Every day gets its own flags and status, so past days can be reviewed the way today is.
+    for i, day in enumerate(series):
+        day_flags, day["sleep_debt_h"] = _recovery_flags(series, i, rc)
+        day["status"] = _status(day["score"], day_flags)
+        day["flags"] = day_flags
+
     # "Today" is the latest day with any wellness data (watch may not have synced yet).
-    latest = next((s for s in reversed(series) if s["hrv"] or s["rhr"] or s["sleep_h"]), series[-1])
-    flags = []
-    if latest["hrv7"] and latest["hrv_lo"] and latest["hrv7"] < latest["hrv_lo"]:
-        flags.append(_flag("warning", "HRV below normal range",
-                           f"7-day HRV average {latest['hrv7']:.0f} ms is under your normal range "
-                           f"({latest['hrv_lo']:.0f}–{latest['hrv_hi']:.0f} ms). Typical causes: accumulated training "
-                           "stress, illness, alcohol, poor sleep."))
-    elif latest["hrv7"] and latest["hrv_hi"] and latest["hrv7"] > latest["hrv_hi"]:
-        flags.append(_flag("info", "HRV above normal range",
-                           "Usually positive adaptation; if paired with fatigue or heavy training it can also "
-                           "signal parasympathetic overreaching."))
-    if latest["rhr3"] and latest["rhr_base"] and latest["rhr3"] - latest["rhr_base"] >= rc["rhr_elevated_bpm"]:
-        flags.append(_flag("warning", "Resting HR elevated",
-                           f"3-day resting HR {latest['rhr3']:.0f} bpm is {latest['rhr3'] - latest['rhr_base']:.0f} bpm "
-                           "above baseline — an early sign of illness, heat, dehydration or overreaching."))
-    last7 = [s["sleep_h"] for s in series[-7:] if s["sleep_h"]]
-    debt = sum(max(0.0, target_h - h) for h in last7)
-    if debt >= rc["sleep_debt_flag_hours"]:
-        flags.append(_flag("warning", "Sleep debt",
-                           f"{debt:.1f} h short of your {target_h:g} h target over the last 7 nights."))
+    li = next((i for i in range(len(series) - 1, -1, -1)
+               if series[i]["hrv"] or series[i]["rhr"] or series[i]["sleep_h"]), len(series) - 1)
+    latest = series[li]
+    flags = list(latest["flags"])
+    debt = latest["sleep_debt_h"]
 
     ac = cfg.get("activity", {})
     goal = ac.get("steps_goal")
@@ -198,11 +189,7 @@ def recovery(days: dict, cfg: dict, today: date) -> dict:
                            f"of your {goal:,} goal. Easy walking helps recovery without adding training load."))
 
     score = latest["score"]
-    status = None
-    if score is not None:
-        status = "good" if score >= 65 else "moderate" if score >= 45 else "low"
-        if sum(f["level"] == "warning" for f in flags) >= 2:
-            status = "low"
+    status = latest["status"]
 
     return {
         "series": series,
@@ -217,6 +204,52 @@ def recovery(days: dict, cfg: dict, today: date) -> dict:
         },
         "flags": flags,
     }
+
+
+def _recovery_flags(series: list[dict], i: int, rc: dict) -> tuple[list[dict], float]:
+    """Recovery warnings as they stood on day i, plus that day's 7-night sleep debt."""
+    day, target_h = series[i], rc["sleep_target_hours"]
+    flags = []
+    if day["hrv7"] and day["hrv_lo"] and day["hrv7"] < day["hrv_lo"]:
+        flags.append(_flag("warning", "HRV below normal range",
+                           f"7-day HRV average {day['hrv7']:.0f} ms is under your normal range "
+                           f"({day['hrv_lo']:.0f}–{day['hrv_hi']:.0f} ms). Typical causes: accumulated training "
+                           "stress, illness, alcohol, poor sleep."))
+    elif day["hrv7"] and day["hrv_hi"] and day["hrv7"] > day["hrv_hi"]:
+        flags.append(_flag("info", "HRV above normal range",
+                           "Usually positive adaptation; if paired with fatigue or heavy training it can also "
+                           "signal parasympathetic overreaching."))
+    if day["rhr3"] and day["rhr_base"] and day["rhr3"] - day["rhr_base"] >= rc["rhr_elevated_bpm"]:
+        flags.append(_flag("warning", "Resting HR elevated",
+                           f"3-day resting HR {day['rhr3']:.0f} bpm is {day['rhr3'] - day['rhr_base']:.0f} bpm "
+                           "above baseline — an early sign of illness, heat, dehydration or overreaching."))
+    nights = [s["sleep_h"] for s in series[max(0, i - 6): i + 1] if s["sleep_h"]]
+    debt = round(sum(max(0.0, target_h - h) for h in nights), 1)
+    if debt >= rc["sleep_debt_flag_hours"]:
+        flags.append(_flag("warning", "Sleep debt",
+                           f"{debt:.1f} h short of your {target_h:g} h target over the last 7 nights."))
+    return flags, debt
+
+
+def _status(score, flags) -> str | None:
+    if score is None:
+        return None
+    status = "good" if score >= 65 else "moderate" if score >= 45 else "low"
+    if sum(f["level"] == "warning" for f in flags) >= 2:
+        status = "low"
+    return status
+
+
+def _zone(acwr, tc: dict) -> str | None:
+    if acwr is None:
+        return None
+    if acwr > tc["acwr_danger"]:
+        return "danger"
+    if acwr > tc["acwr_high"]:
+        return "high"
+    if acwr < tc["acwr_low"]:
+        return "low"
+    return "optimal"
 
 
 def _flag(level: str, title: str, detail: str) -> dict:
@@ -359,25 +392,20 @@ def training(activities: list[dict], days: dict, cfg: dict, today: date) -> dict
 
     t = daily[-1]
     acwr = t["acwr"]
-    zone = None
+    zone = _zone(acwr, tc)
     flags = []
     if acwr is not None:
-        if acwr > tc["acwr_danger"]:
-            zone = "danger"
+        if zone == "danger":
             flags.append(_flag("critical", "Load spike",
                                f"Acute:chronic ratio {acwr:.2f} — this week's load is well above what you're "
                                "adapted to. Injury and illness risk rise sharply here."))
-        elif acwr > tc["acwr_high"]:
-            zone = "high"
+        elif zone == "high":
             flags.append(_flag("warning", "Ramping fast",
                                f"Acute:chronic ratio {acwr:.2f}. Fine for a planned build week; don't stack another."))
-        elif acwr < tc["acwr_low"]:
-            zone = "low"
+        elif zone == "low":
             flags.append(_flag("info", "Under-loading",
                                f"Acute:chronic ratio {acwr:.2f}. Expected during a taper or rest week; "
                                "if prolonged, fitness will drift down."))
-        else:
-            zone = "optimal"
     if monotony and monotony > 2:
         flags.append(_flag("warning", "Monotonous week",
                            f"Training monotony {monotony:.1f} (>2). Too little variation between hard and easy days."))
@@ -587,9 +615,7 @@ def nutrition(food: dict, days: dict, types_by_day: dict, cfg: dict, today: date
 # ---------------------------------------------------------------------------
 
 
-def guidance(rec: dict, tr: dict) -> dict:
-    status = rec["today"]["status"]
-    zone = tr["today"]["zone"]
+def guidance(status: str | None, zone: str | None) -> dict:
     if status is None:
         return {"status": "calibrating", "headline": "Building your baseline",
                 "detail": "Readiness needs about two weeks of HRV and resting-HR data before it means anything."}
@@ -621,4 +647,16 @@ def compute(raw: dict, cfg: dict, today: date) -> dict:
         nu["flags"].append(_flag("info", "Calorie balance and scale disagree",
                                  f"Logged intake vs Garmin's burn implies {implied:+.1f} lb/week; your weight trend shows "
                                  f"{measured:+.1f} lb/week. Usually unlogged food or an over-estimated burn. Trust the scale trend."))
-    return {"recovery": rec, "training": tr, "body": bd, "nutrition": nu, "guidance": guidance(rec, tr)}
+    # The morning call for every day in the window, so the dashboard can step back through them.
+    acwr_by_day = {d["date"]: d["acwr"] for d in tr["daily"]}
+    calls = []
+    for day in rec["series"]:
+        zone = _zone(acwr_by_day.get(day["date"]), cfg["training"])
+        calls.append({"date": day["date"], "score": day["score"], "acwr": acwr_by_day.get(day["date"]), "zone": zone,
+                      **guidance(day["status"], zone),
+                      "flags": [{"level": f["level"], "title": f["title"]} for f in day["flags"]]})
+    # Per-day flag details live in `calls`; keep the series lean.
+    for day in rec["series"]:
+        day.pop("flags", None)
+    return {"recovery": rec, "training": tr, "body": bd, "nutrition": nu,
+            "guidance": guidance(rec["today"]["status"], tr["today"]["zone"]), "calls": calls}

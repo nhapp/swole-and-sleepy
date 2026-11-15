@@ -288,3 +288,13 @@ def test_source_with_only_recent_records_is_backfilled():
     raw = {"activities": {"strava:1": {"source": "strava", "date": recent}, "garmin:1": {"source": "garmin", "date": old}}}
     assert _window("activities", raw, cfg, TODAY, "strava") == TODAY - timedelta(days=180)
     assert _window("activities", raw, cfg, TODAY, "garmin") == TODAY - timedelta(days=10)
+
+
+def test_every_day_has_a_call_and_today_matches_guidance():
+    raw = synth(TODAY, tz=CFG["timezone"])
+    out = metrics.compute(raw, CFG, TODAY)
+    calls = out["calls"]
+    assert len(calls) == metrics.SERIES_DAYS and calls[-1]["date"] == TODAY.isoformat()
+    assert all({"status", "headline", "detail", "score", "flags"} <= set(c) for c in calls)
+    assert calls[-1]["headline"] == out["guidance"]["headline"]
+    assert "flags" not in out["recovery"]["series"][-1]  # details live in calls only

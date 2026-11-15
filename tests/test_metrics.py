@@ -275,7 +275,7 @@ def test_nutrition_without_protein_skips_protein_flag():
 def test_new_source_gets_its_own_backfill():
     from swole.run import _window
     cfg = dict(CFG, fetch={"backfill_days": 180, "lookback_days": 10, "wear_backfill_days": 90})
-    raw = {"activities": {"garmin:1": {"source": "garmin"}}}
+    raw = {"activities": {"garmin:1": {"source": "garmin", "date": (TODAY - timedelta(days=90)).isoformat()}}}
     assert _window("activities", raw, cfg, TODAY, "garmin") == TODAY - timedelta(days=10)
     assert _window("activities", raw, cfg, TODAY, "strava") == TODAY - timedelta(days=180)
 

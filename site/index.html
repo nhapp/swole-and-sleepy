@@ -95,10 +95,14 @@ a { color: var(--accent); }
 
 /* Day navigator */
 .daynav { display: flex; align-items: center; gap: 8px; margin-bottom: -14px; min-width: 0; }
-.navbtn, .todaybtn { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; color: var(--ink); }
+.navbtn { flex: none; border: 1px solid var(--line); background: var(--surface); border-radius: 8px; color: var(--ink); }
 .navbtn { width: 34px; height: 46px; font-size: 22px; line-height: 1; }
 .navbtn:disabled { opacity: .35; cursor: default; }
-.todaybtn { height: 34px; padding: 0 12px; font-size: 13px; font-weight: 600; color: var(--accent); }
+.daypip.today { width: 52px; color: var(--accent); font-weight: 600; }
+.backtoday { margin-left: auto; border: 0; border-radius: 999px; padding: 8px 14px; min-height: 36px; background: var(--accent); color: #fff; font-weight: 600; font-size: 13.5px; }
+.call .toprow { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.call { touch-action: pan-y; }
+@media (max-width: 560px) { .navbtn { width: 30px; } }
 .strip { flex: 1; min-width: 0; display: flex; gap: 4px; overflow-x: auto; scroll-behavior: smooth; scrollbar-width: none; padding: 2px; }
 .strip::-webkit-scrollbar { display: none; }
 .daypip { flex: none; width: 38px; display: grid; justify-items: center; gap: 3px; padding: 5px 0 6px; border-radius: 8px;
@@ -136,6 +140,8 @@ a { color: var(--accent); }
 .macro .bar i { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); opacity: .55; }
 .macro .k { color: var(--ink-2); }
 .macro .v { font-variant-numeric: tabular-nums; text-align: right; }
+.zones { display: flex; font: 11px var(--font-data); color: var(--muted); margin-top: -8px; }
+.zones span { text-align: center; white-space: nowrap; overflow: hidden; }
 .scale { display: flex; justify-content: space-between; font: 11px var(--font-data); color: var(--muted); }
 
 /* Flags */
@@ -228,7 +234,6 @@ th { font: 500 11px var(--font-data); text-transform: uppercase; letter-spacing:
       <button type="button" class="navbtn" id="dayPrev" aria-label="Previous day">‹</button>
       <div class="strip" id="dayStrip" role="listbox" aria-label="Readiness by day"></div>
       <button type="button" class="navbtn" id="dayNext" aria-label="Next day">›</button>
-      <button type="button" class="todaybtn" id="dayToday" hidden>Today</button>
     </nav>
     <section class="call" id="call" aria-live="polite"></section>
     <section class="panels">
@@ -352,16 +357,18 @@ function renderNav() {
     const st = STATUS[c.status] || STATUS.calibrating;
     const d = new Date(c.date + "T12:00:00");
     const label = `${dlabel(c.date, { weekday: "long", month: "long", day: "numeric" })}: ${c.headline}${c.score == null ? "" : ", readiness " + c.score}`;
-    return `<button type="button" class="daypip" role="option" data-date="${c.date}" aria-selected="${c.date === cur}" aria-label="${esc(label)}" title="${esc(label)}" style="--pip:var(${st.c})">
-      ${d.toLocaleDateString(undefined, { weekday: "narrow" })}<b>${d.getDate()}</b><i></i></button>`;
+    const isT = c.date === DATA.meta.today;
+    return `<button type="button" class="daypip${isT ? " today" : ""}" role="option" data-date="${c.date}" aria-selected="${c.date === cur}" aria-label="${esc(label)}" title="${esc(label)}" style="--pip:var(${st.c})">
+      ${isT ? "Today" : d.toLocaleDateString(undefined, { weekday: "narrow" })}<b>${d.getDate()}</b><i></i></button>`;
   }).join("");
   const idx = list.findIndex((c) => c.date === cur);
   $("#dayPrev").disabled = idx <= 0;
   $("#dayNext").disabled = idx < 0 || idx >= list.length - 1;
-  $("#dayToday").hidden = isToday();
   const pip = $("#dayStrip").querySelector('[aria-selected="true"]');
   // Scroll only the strip (scrollIntoView would also nudge the page).
-  if (pip) { const st = $("#dayStrip"); st.scrollLeft = pip.offsetLeft - st.offsetLeft - (st.clientWidth - pip.offsetWidth) / 2; }
+  const st = $("#dayStrip");
+  if (isToday()) { st.style.scrollBehavior = "auto"; st.scrollLeft = st.scrollWidth; st.style.scrollBehavior = ""; } // today sits at the right edge
+  else if (pip) st.scrollLeft = pip.offsetLeft - st.offsetLeft - (st.clientWidth - pip.offsetWidth) / 2;
 }
 
 function selectDay(date) {
@@ -395,9 +402,10 @@ function renderCall() {
         stroke-dasharray="${C}" stroke-dashoffset="${off}" transform="rotate(-90 32 32)"/>
       <text x="32" y="37" text-anchor="middle" style="font:600 17px var(--font-ui);fill:var(--ink)">${score == null ? "–" : score}</text>
     </svg>
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <div class="toprow">
       <span class="pill">${icon(g.status === "calibrating" ? "calibrating" : g.status, 14)} ${st.label}</span>
       <span class="label">${today ? "Today · " : ""}${dlabel(selDate(), { weekday: "long", month: "long", day: "numeric" })}</span>
+      ${today ? "" : `<button type="button" class="backtoday" id="backToday">Back to today ›</button>`}
     </div>
     <div class="headline">${esc(today ? g.headline : g.headline.replace(/ today\b/i, ""))}</div>
     <div class="detail">${esc(g.detail)}</div>
@@ -482,18 +490,25 @@ function renderNutrition() {
     </div>`;
 }
 
+// Acute:chronic as "% vs your usual week": 1.08 -> +8%. Same thresholds, plainer reading.
+const loadPct = (acwr) => acwr == null ? null : (acwr - 1) * 100;
+const LOAD_ZONE = { low: "Lighter than usual", optimal: "Normal", high: "Building fast", danger: "Too fast" };
+
 function renderTraining() {
   const T = DATA.derived.training, t = T.today, tc = CFG.training;
-  const zoneLabel = { optimal: "In balance", high: "Ramping", danger: "Spike", low: "Under-loaded" }[t.zone] || "Not enough history";
+  const zoneLabel = LOAD_ZONE[t.zone] || "Not enough history yet";
+  const pct = loadPct(t.acwr), lo = loadPct(tc.acwr_low), hi = loadPct(tc.acwr_high), dz = loadPct(tc.acwr_danger);
   const thisWeek = T.weeks[T.weeks.length - 1], prev = T.weeks[T.weeks.length - 2];
   $("#pTraining").innerHTML = `
     <div class="panel-head"><h3>Training load</h3><span class="label">Garmin</span></div>
-    <div class="hero"><span class="v num">${t.acwr == null ? "–" : f(t.acwr, 2)}</span><span class="u">acute : chronic · ${zoneLabel}</span></div>
-    ${bandMeter(t.acwr, 0.4, 2.0, [[0.4, tc.acwr_low, "--accent"], [tc.acwr_low, tc.acwr_high, "--good"], [tc.acwr_high, tc.acwr_danger, "--warning"], [tc.acwr_danger, 2.0, "--critical"]])}
-    <div class="scale"><span>0.4</span><span>${tc.acwr_low}</span><span>${tc.acwr_high}</span><span>${tc.acwr_danger}</span><span>2.0</span></div>
+    <div class="hero"><span class="v num">${pct == null ? "–" : signed(pct, 0) + "%"}</span><span class="u">this week vs your usual · <b style="color:var(--ink)">${zoneLabel}</b></span></div>
+    ${bandMeter(pct, -60, 100, [[-60, lo, "--accent"], [lo, hi, "--good"], [hi, dz, "--warning"], [dz, 100, "--critical"]])}
+    <div class="zones" aria-hidden="true">
+      <span style="flex:${lo + 60}">Light</span><span style="flex:${hi - lo}">Normal</span><span style="flex:${dz - hi}">Fast</span><span style="flex:${100 - dz}">Too fast</span>
+    </div>
     <div class="rows">
-      <div class="row"><span class="k">Acute load (${tc.acute_days}-day avg)</span><span class="val">${f(t.acute)}</span></div>
-      <div class="row"><span class="k">Chronic load (${tc.chronic_days}-day avg)</span><span class="val">${f(t.chronic)}</span></div>
+      <div class="row"><span class="k">Load, last ${tc.acute_days} days</span><span class="val">${f(t.acute * 7)} pts</span>
+        <span class="sub">Your usual week (last ${tc.chronic_days / 7} weeks' average): ${f(t.chronic * 7)} pts. Points come from each session's heart rate and duration.</span></div>
       <div class="row"><span class="k">This week</span><span class="val">${hm(thisWeek.minutes * 60)} · ${thisWeek.count} sessions</span>
         <span class="sub">Last week ${hm(prev.minutes * 60)}, ${f(dist(prev.distance_km), 1)} ${distU()} · monotony ${t.monotony == null ? "–" : f(t.monotony, 1)}</span></div>
     </div>
@@ -692,6 +707,9 @@ function renderCharts() {
   const A = "var(--accent)", B = "var(--accent-2)", M = "var(--muted)";
   const wf1 = (v) => f(v, 1);
   const specs = [
+    { title: "Readiness score", sub: "Daily composite of HRV, resting HR and sleep", rows: rec, yMin: 0, yMax: 100,
+      zones: [{ lo: 0, hi: 45, color: "var(--critical)" }, { lo: 45, hi: 65, color: "var(--warning)" }, { lo: 65, hi: 100, color: "var(--good)" }],
+      series: [{ type: "line", key: "score", color: A }] },
     { title: "Heart rate variability", sub: "Overnight HRV with your normal range (±" + CFG.recovery.normal_range_sd + " SD of the prior " + CFG.recovery.baseline_days + " days)", rows: rec,
       series: [{ type: "band", lo: "hrv_lo", hi: "hrv_hi", color: A, label: "Normal range" }, { type: "dots", key: "hrv", color: M, label: "Nightly" }, { type: "line", key: "hrv7", color: A, label: "7-day average" }],
       yFmt: (v) => f(v) },
@@ -707,14 +725,13 @@ function renderCharts() {
                { type: "bars", key: "steps_today", color: A, opacity: 0.25, label: "Today so far" },
                { type: "line", key: "steps7", color: B, label: "7-day average" }],
       yFmt: (v) => v >= 1000 ? f(v / 1000, v % 1000 ? 1 : 0) + "K" : f(v) },
-    { title: "Readiness score", sub: "Daily composite of HRV, resting HR and sleep", rows: rec, yMin: 0, yMax: 100,
-      zones: [{ lo: 0, hi: 45, color: "var(--critical)" }, { lo: 45, hi: 65, color: "var(--warning)" }, { lo: 65, hi: 100, color: "var(--good)" }],
-      series: [{ type: "line", key: "score", color: A }] },
     { title: "Training load", sub: "Daily load (TRIMP) with acute and chronic averages", rows: tr, yMin: 0,
       series: [{ type: "bars", key: "load", color: M, opacity: 0.5, label: "Daily load" }, { type: "line", key: "acute", color: B, label: "Acute " + CFG.training.acute_days + "d" }, { type: "line", key: "chronic", color: A, label: "Chronic " + CFG.training.chronic_days + "d" }] },
-    { title: "Acute : chronic ratio", sub: `Sweet spot ${CFG.training.acwr_low}–${CFG.training.acwr_high}; above ${CFG.training.acwr_danger} is a spike`, rows: tr, yMin: 0.4, yMax: 1.8,
-      zones: [{ lo: CFG.training.acwr_low, hi: CFG.training.acwr_high, color: "var(--good)" }, { lo: CFG.training.acwr_high, hi: CFG.training.acwr_danger, color: "var(--warning)" }, { lo: CFG.training.acwr_danger, hi: 9, color: "var(--critical)" }],
-      series: [{ type: "line", key: "acwr", color: A, fmt: (v) => f(v, 2) }], yFmt: (v) => f(v, 1) },
+    { title: "This week vs your usual", sub: `Last 7 days' load compared with your ${CFG.training.chronic_days / 7}-week average. Green is normal; above +${f(loadPct(CFG.training.acwr_danger))}% is too fast.`,
+      rows: tr.map((r) => ({ ...r, loadpct: loadPct(r.acwr) })), yMin: -60, yMax: 80,
+      refs: [{ y: 0, label: "Your usual" }],
+      zones: [{ lo: loadPct(CFG.training.acwr_low), hi: loadPct(CFG.training.acwr_high), color: "var(--good)" }, { lo: loadPct(CFG.training.acwr_high), hi: loadPct(CFG.training.acwr_danger), color: "var(--warning)" }, { lo: loadPct(CFG.training.acwr_danger), hi: 999, color: "var(--critical)" }],
+      series: [{ type: "line", key: "loadpct", color: A, fmt: (v) => signed(v, 0) + "%" }], yFmt: (v) => (v > 0 ? "+" : "") + f(v) + "%" },
     { title: "Weekly training time", sub: "Hours per week, Monday to Sunday", rows: weeks, yMin: 0,
       xLabel: (r, long) => dlabel(r.week_start, long ? { month: "short", day: "numeric", year: "numeric" } : undefined),
       series: [{ type: "bars", key: "hours", color: A, fmt: (v) => hm(v * 3600) }], yFmt: (v) => f(v, v % 1 ? 1 : 0) },
@@ -769,7 +786,7 @@ function renderAssumptions() {
       <li>Wrist HR is unreliable in water and barely rises when lifting, so swims and lifts use Garmin's own training load, or minutes × <code>${t.duration_load_per_min.swim}</code> (swim) / <code>${t.duration_load_per_min.lift}</code> (lift).</li>
       <li>A run of <code>${t.long_run_minutes} min</code> or more counts as a long run.</li>
       <li>Activities on both Garmin and Strava are counted once. The Garmin copy wins when start times are within 5 minutes.</li>
-      <li>Acute:chronic is the ${t.acute_days}-day over the ${t.chronic_days}-day average daily load. It flags fast ramps well but is a rough injury predictor; read it with how you feel.</li>
+      <li>"This week vs your usual" compares the last ${t.acute_days} days of load with your ${t.chronic_days / 7}-week average. 0% means a typical week. ${signed(loadPct(t.acwr_low), 0)}% to ${signed(loadPct(t.acwr_high), 0)}% is normal; above ${signed(loadPct(t.acwr_danger), 0)}% is ramping too fast for your body to keep up. It's a rough guide, so read it alongside how you feel.</li>
       <li>Monotony (mean ÷ SD of the last 7 days) above 2 means too little contrast between hard and easy days.</li></ul></div>
     <div class="card"><h3>Body composition</h3><ul>
       <li>One reading per day, the earliest, because morning weigh-ins are the most consistent.</li>
@@ -787,15 +804,25 @@ function renderAssumptions() {
 function renderAll() {
   CFG = DATA.meta.config; IMPERIAL = CFG.units === "imperial";
   $("#demoBanner").hidden = !DATA.meta.demo;
-  renderSources(); renderNav(); renderCall(); renderRecovery(); renderNutrition(); renderTraining(); renderBody(); renderFlags(); renderActivities(); renderAssumptions();
+  renderSources(); renderCall(); renderRecovery(); renderNutrition(); renderTraining(); renderBody(); renderFlags(); renderActivities(); renderAssumptions();
   $("#lock").hidden = true; $("#app").hidden = false;
+  renderNav(); // after the app is visible, so the strip has a width to scroll to today
   renderCharts();
 }
 
 // ---------- boot ----------
 $("#dayPrev").addEventListener("click", () => stepDay(-1));
 $("#dayNext").addEventListener("click", () => stepDay(1));
-$("#dayToday").addEventListener("click", () => selectDay(DATA.meta.today));
+$("#call").addEventListener("click", (e) => { if (e.target.closest("#backToday")) selectDay(DATA.meta.today); });
+// Swipe the readiness card: left for the next day, right for the previous one.
+let touchX = null, touchY = null;
+$("#call").addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; }, { passive: true });
+$("#call").addEventListener("touchend", (e) => {
+  if (touchX == null) return;
+  const dx = e.changedTouches[0].clientX - touchX, dy = e.changedTouches[0].clientY - touchY;
+  touchX = null;
+  if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) stepDay(dx < 0 ? 1 : -1);
+}, { passive: true });
 $("#dayStrip").addEventListener("click", (e) => { const b = e.target.closest(".daypip"); if (b) selectDay(b.dataset.date); });
 addEventListener("keydown", (e) => {
   if (!DATA || $("#app").hidden || /^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;

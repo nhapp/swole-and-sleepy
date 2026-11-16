@@ -1,0 +1,8 @@
+<!--
+  Copy this file to resources/settings/properties.xml and paste your Garmin
+  personal API key between the tags. That file is git-ignored: the key never
+  leaves your Mac except inside the app you install on your own watch.
+-->
+<properties>
+    <property id="apiKey" type="string">PASTE-YOUR-GARMIN-PERSONAL-API-KEY-HERE</property>
+</properties>

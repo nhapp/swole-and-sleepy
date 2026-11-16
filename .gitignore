@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .venv/
 *.tmp
+
+# Connect IQ watch app: local key and build output
+watch/resources/settings/properties.xml
+watch/bin/
+*.der
+*.pem

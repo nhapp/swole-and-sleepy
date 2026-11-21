@@ -298,3 +298,31 @@ def test_every_day_has_a_call_and_today_matches_guidance():
     assert all({"status", "headline", "detail", "score", "flags"} <= set(c) for c in calls)
     assert calls[-1]["headline"] == out["guidance"]["headline"]
     assert "flags" not in out["recovery"]["series"][-1]  # details live in calls only
+
+
+def _act(src, start, mins, sport, ext=""):
+    return {"id": f"{src}:{start}", "source": src, "start_utc": f"2026-11-14T{start}:00+00:00", "date": "2026-11-14",
+            "duration_s": mins * 60, "sport": sport, "external_id": ext, "distance_m": 0}
+
+
+def test_dedupe_ignores_duration_mismatch_for_same_start():
+    # Pool swim: Garmin moving time 45 min, Strava counts rests and says 62 min.
+    acts = [_act("garmin", "11:00", 45, "Lap Swimming"), _act("strava", "11:00", 62, "Swim")]
+    assert [a["source"] for a in metrics.dedupe_activities(acts)] == ["garmin"]
+
+
+def test_dedupe_uses_garmin_tag_or_same_sport_within_15_minutes():
+    g = _act("garmin", "11:00", 60, "Hiking")
+    tagged = _act("strava", "11:09", 40, "Walk", ext="garmin_ping_123")
+    same_sport = _act("strava", "11:10", 45, "Hike")
+    assert [a["source"] for a in metrics.dedupe_activities([g, tagged])] == ["garmin"]
+    assert [a["source"] for a in metrics.dedupe_activities([g, same_sport])] == ["garmin"]
+
+
+def test_dedupe_keeps_strava_only_sessions():
+    run = _act("garmin", "11:00", 50, "Running")
+    lift_later = _act("strava", "11:08", 45, "WeightTraining", ext="caliber-xyz")  # different sport, not from Garmin
+    lift_other_day = _act("strava", "18:30", 45, "WeightTraining")
+    kept = metrics.dedupe_activities([run, lift_later, lift_other_day])
+    assert sorted(a["id"] for a in kept) == sorted([run["id"], lift_later["id"], lift_other_day["id"]])
+    assert "2 Strava-only kept" in metrics.dedupe_report([run, lift_later, lift_other_day])

@@ -79,6 +79,9 @@ def normalize(a: dict) -> dict:
         "sport": a.get("sport_type") or a.get("type") or "Workout",
         "name": a.get("name", ""),
         "duration_s": a.get("moving_time") or a.get("elapsed_time") or 0,
+        "elapsed_s": a.get("elapsed_time") or 0,
+        # e.g. "garmin_ping_123..." when Garmin Connect uploaded it; marks a copy of a Garmin activity.
+        "external_id": a.get("external_id") or "",
         "distance_m": a.get("distance") or 0,
         "avg_hr": a.get("average_heartrate"),
         "max_hr": a.get("max_heartrate"),

@@ -137,7 +137,11 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
         
     def do_strava():
         strava.ensure_fresh(tokens["strava"])
-        since = datetime.combine(_window("activities", raw, cfg, today, "strava"), datetime.min.time(), tz)
+        start = _window("activities", raw, cfg, today, "strava")
+        # Records saved before Strava's origin tag was kept need one full re-pull to get it.
+        if any(a.get("source") == "strava" and "external_id" not in a for a in raw["activities"].values()):
+            start = today - timedelta(days=cfg["fetch"]["backfill_days"])
+        since = datetime.combine(start, datetime.min.time(), tz)
         for a in strava.fetch_activities(tokens["strava"], since):
             raw["activities"][a["id"]] = a
 
@@ -151,6 +155,7 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
     run("strava", do_strava)
     run("withings", do_withings)
     print("coverage " + coverage(raw))
+    print(metrics.dedupe_report(list(raw["activities"].values())))
     # Nutrition arrives by import (python -m swole.nutrition), not in this job; keep its last status.
     prev = store.get("meta", {}).get("sources", {})
     status["nutrition"] = prev.get("nutrition") or {"ok": False, "error": "not set up", "last_success": None}

@@ -220,6 +220,7 @@ def normalize_activity(a: dict) -> dict:
         "sport": sport,
         "name": a.get("activityName") or "",
         "duration_s": a.get("movingDuration") or a.get("duration") or 0,
+        "elapsed_s": a.get("elapsedDuration") or a.get("duration") or 0,
         "distance_m": a.get("distance") or 0,
         "avg_hr": a.get("averageHR"),
         "max_hr": a.get("maxHR"),

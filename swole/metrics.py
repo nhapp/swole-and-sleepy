@@ -261,23 +261,57 @@ def _flag(level: str, title: str, detail: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
+def _family(a: dict) -> str:
+    c = category(a)
+    return "run" if c == "long_run" else c
+
+
+def _from_garmin(a: dict) -> bool:
+    return str(a.get("external_id") or "").lower().startswith("garmin")
+
+
+def _strava_copy_of(a: dict, garmin: list[tuple]) -> bool:
+    """Is this Strava activity a copy of one of the Garmin activities?
+
+    Durations are no good for matching: Garmin and Strava compute moving time differently
+    (pool-swim rests, stops on hikes), so they can differ by a third or more. Start time decides:
+    within 2 minutes it's the same activity; within 15 minutes it's the same if Strava says it came
+    from Garmin or it's the same kind of sport.
+    """
+    t = datetime.fromisoformat(a["start_utc"])
+    for gt, gfam in garmin:
+        gap = abs((t - gt).total_seconds())
+        if gap <= 120:
+            return True
+        if gap <= 900 and (_from_garmin(a) or gfam == _family(a)):
+            return True
+    return False
+
+
 def dedupe_activities(acts: list[dict]) -> list[dict]:
-    """Garmin usually auto-uploads to Strava. Keep the Garmin copy when start times match."""
+    """Garmin auto-uploads to Strava; keep the Garmin copy and drop Strava's."""
     acts = [dict(a) for a in acts]
     garmin = [a for a in acts if a["source"] == "garmin"]
-    starts = [(datetime.fromisoformat(a["start_utc"]), a["duration_s"]) for a in garmin]
-    out = list(garmin)
-    for a in acts:
-        if a["source"] == "garmin":
-            continue
-        t = datetime.fromisoformat(a["start_utc"])
-        dup = any(
-            abs((t - gt).total_seconds()) <= 300 and abs(a["duration_s"] - gd) <= max(120, 0.2 * gd)
-            for gt, gd in starts
-        )
-        if not dup:
-            out.append(a)
+    starts = [(datetime.fromisoformat(a["start_utc"]), _family(a)) for a in garmin]
+    out = list(garmin) + [a for a in acts if a["source"] != "garmin" and not _strava_copy_of(a, starts)]
     return sorted(out, key=lambda a: a["start_utc"])
+
+
+def dedupe_report(acts: list[dict]) -> str:
+    """Counts only, for the run log: copies removed, what Strava adds, and any near-misses."""
+    kept = [a for a in dedupe_activities(acts) if a["source"] != "garmin"]
+    strava = [a for a in acts if a["source"] != "garmin"]
+    garmin_starts = [datetime.fromisoformat(a["start_utc"]) for a in acts if a["source"] == "garmin"]
+    by: dict[str, int] = {}
+    for a in kept:
+        by[_family(a)] = by.get(_family(a), 0) + 1
+    near = sum(1 for a in kept if any(abs((datetime.fromisoformat(a["start_utc"]) - g).total_seconds()) <= 3600
+                                      for g in garmin_starts))
+    tagged = sum(1 for a in kept if _from_garmin(a))
+    only = ", ".join(f"{k} {n}" for k, n in sorted(by.items()))
+    return (f"dedupe: {len(strava) - len(kept)} Strava copies of Garmin activities removed; "
+            f"{len(kept)} Strava-only kept ({only or 'none'}); "
+            f"{near} kept within an hour of a Garmin activity; {tagged} kept despite a Garmin tag")
 
 
 def category(a: dict, long_run_minutes: float = 75) -> str:

@@ -124,7 +124,14 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
                 raw["activities"][a["id"]] = a
             # Food totals that MyFitnessPal syncs into Garmin. A CSV import or the MFP API, which
             # carry macros, take precedence over these calorie-only rows.
-            for d, food in garmin.fetch_food(g, per_day_window(raw, cfg, today, "food_checked", 30)):
+            skipped: list[str] = []
+            recent = (today - timedelta(days=cfg["fetch"]["lookback_days"])).isoformat()
+            for d, food in garmin.fetch_food(g, per_day_window(raw, cfg, today, "food_checked", 30), skipped):
+                if food is garmin.SKIPPED:
+                    # Recent days get retried next run anyway; stop retrying older ones that keep failing.
+                    if d < recent:
+                        raw["days"].setdefault(d, {})["food_checked"] = True
+                    continue
                 raw["days"].setdefault(d, {})["food_checked"] = True
                 current = raw["nutrition"].get(d, {})
                 if food and current.get("source", "garmin-mfp") == "garmin-mfp":
@@ -132,8 +139,14 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
                     garmin_food[0] = True
             # Watch-wear needs one request per day. Fetch the recent days again (late syncs) plus any
             # day in the backfill window not fetched yet, so an interrupted backfill resumes next run.
-            for d, segs in garmin.fetch_wear(g, per_day_window(raw, cfg, today, "wear", cfg["fetch"]["wear_backfill_days"])):
+            for d, segs in garmin.fetch_wear(g, per_day_window(raw, cfg, today, "wear", cfg["fetch"]["wear_backfill_days"]), skipped):
+                if segs is garmin.SKIPPED:
+                    if d < recent and "wear" not in raw["days"].get(d, {}):
+                        raw["days"].setdefault(d, {})["wear"] = []
+                    continue
                 raw["days"].setdefault(d, {})["wear"] = segs
+            if skipped:
+                print("garmin   skipped days Garmin's server errored on: " + ", ".join(skipped))
         
     def do_strava():
         strava.ensure_fresh(tokens["strava"])

@@ -326,3 +326,35 @@ def test_dedupe_keeps_strava_only_sessions():
     kept = metrics.dedupe_activities([run, lift_later, lift_other_day])
     assert sorted(a["id"] for a in kept) == sorted([run["id"], lift_later["id"], lift_other_day["id"]])
     assert "2 Strava-only kept" in metrics.dedupe_report([run, lift_later, lift_other_day])
+
+
+def test_one_bad_garmin_day_does_not_fail_the_run():
+    from garmin_personal_api import HttpError
+    from swole import garmin
+
+    class Fake:
+        def get_daily_food_logs(self, d):
+            if d.day == 13:
+                raise HttpError(status_code=500, method="GET", url="u", response_text="{}")
+            return {"dailyNutritionContent": {"calories": 2000}}
+
+    skipped = []
+    days = [date(2026, 11, 12), date(2026, 11, 13), date(2026, 11, 14)]
+    out = list(garmin.fetch_food(Fake(), days, skipped))
+    assert out[1] == ("2026-11-13", garmin.SKIPPED) and out[2][1]["kcal"] == 2000
+    assert skipped == ["2026-11-13 HTTP 500"]
+
+
+def test_auth_errors_still_fail():
+    from garmin_personal_api import HttpError
+    from swole import garmin
+
+    class Fake:
+        def get_daily_heart_rate(self, d):
+            raise HttpError(status_code=401, method="GET", url="u", response_text="")
+
+    try:
+        list(garmin.fetch_wear(Fake(), [date(2026, 11, 13)], []))
+    except HttpError:
+        return
+    raise AssertionError("401 should not be swallowed")

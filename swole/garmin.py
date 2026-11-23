@@ -161,10 +161,27 @@ def wear_segments(hr_day, max_gap_ms: int = 10 * 60 * 1000) -> list[list[int]]:
     return segs
 
 
-def fetch_wear(c, days: list[date]):
-    """Yield (date, wear segments) one day at a time, so progress survives a later failure."""
+SKIPPED = object()  # a day Garmin's server errored on; the run carries on without it
+
+
+def _per_day(call, d: date, skipped: list):
+    """One per-day request. A server error on a single day (seen: HTTP 500 on one food log) is
+    noted in `skipped` and the day is passed over, instead of failing the whole Garmin sync.
+    Auth problems (401/403) still raise, since every other request would fail too."""
+    try:
+        return call(d)
+    except HttpError as e:
+        if e.status_code in (401, 403):
+            raise
+        skipped.append(f"{d.isoformat()} HTTP {e.status_code}")
+        return SKIPPED
+
+
+def fetch_wear(c, days: list[date], skipped: list):
+    """Yield (date, wear segments or SKIPPED) one day at a time, so progress survives a later failure."""
     for d in days:
-        yield d.isoformat(), wear_segments(c.get_daily_heart_rate(d))
+        r = _per_day(c.get_daily_heart_rate, d, skipped)
+        yield d.isoformat(), r if r is SKIPPED else wear_segments(r)
 
 
 FOOD_FIELDS = {
@@ -187,10 +204,11 @@ def food_day(resp) -> dict | None:
     return {k: round(v) for k, v in out.items() if isinstance(v, (int, float)) and v > 0} | {"source": "garmin-mfp"}
 
 
-def fetch_food(c, days: list[date]):
-    """Yield (date, totals or None) one day at a time."""
+def fetch_food(c, days: list[date], skipped: list):
+    """Yield (date, totals, None or SKIPPED) one day at a time."""
     for d in days:
-        yield d.isoformat(), food_day(c.get_daily_food_logs(d))
+        r = _per_day(c.get_daily_food_logs, d, skipped)
+        yield d.isoformat(), r if r is SKIPPED else food_day(r)
 
 
 def fetch_activities(c: GarminPersonalApiClient, start: date, end: date) -> list[dict]:

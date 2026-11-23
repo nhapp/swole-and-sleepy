@@ -101,7 +101,14 @@
     "device_load_first_for": [
       "swim",
       "lift"
-    ]
+    ],
+    "swim": {
+      "_note": "Swims count total session time (rests and drills included) and are scored from Garmin's Aerobic Training Effect, since wrist HR is unreliable in water. Load per minute = base + per_te x (TE - 1).",
+      "use_total_time": true,
+      "base_per_min": 1.0,
+      "per_te_per_min": 0.4,
+      "default_te": 3.0
+    }
   },
   "body": {
     "trend_alpha": 0.1,

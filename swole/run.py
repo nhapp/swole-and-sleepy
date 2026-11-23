@@ -82,6 +82,10 @@ def coverage(raw: dict) -> str:
     for a in raw.get("activities", {}).values():
         if category(a) == "other":
             other[a["sport"]] = other.get(a["sport"], 0) + 1
+    swims = [a for a in raw.get("activities", {}).values() if a["source"] == "garmin" and category(a) == "swim"]
+    if swims:
+        acts += (f"; Garmin swims with Training Effect {sum(1 for a in swims if a.get('aerobic_te'))}/{len(swims)}, "
+                 f"with total time {sum(1 for a in swims if a.get('elapsed_s'))}/{len(swims)}")
     if other:
         acts += "; other = " + ", ".join(f"{k} {n}" for k, n in sorted(other.items(), key=lambda x: -x[1]))
     return (f"days with: {fields or 'nothing'}; activities {len(raw.get('activities', {}))} ({acts}); "
@@ -120,7 +124,11 @@ def pull(tokens: dict, store: dict, cfg: dict, today, tz) -> dict:
                 start = today - timedelta(days=cfg["fetch"]["backfill_days"])
             for d, rec in garmin.fetch_daily(g, start, today).items():
                 raw["days"].setdefault(d, {}).update(rec)
-            for a in garmin.fetch_activities(g, _window("activities", raw, cfg, today, "garmin"), today):
+            act_start = _window("activities", raw, cfg, today, "garmin")
+            # Records saved before total time and Training Effect were kept need one full re-pull.
+            if any(a.get("source") == "garmin" and "aerobic_te" not in a for a in raw["activities"].values()):
+                act_start = today - timedelta(days=cfg["fetch"]["backfill_days"])
+            for a in garmin.fetch_activities(g, act_start, today):
                 raw["activities"][a["id"]] = a
             # Food totals that MyFitnessPal syncs into Garmin. A CSV import or the MFP API, which
             # carry macros, take precedence over these calorie-only rows.

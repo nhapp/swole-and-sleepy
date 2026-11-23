@@ -243,6 +243,8 @@ def normalize_activity(a: dict) -> dict:
         "avg_hr": a.get("averageHR"),
         "max_hr": a.get("maxHR"),
         "device_load": a.get("activityTrainingLoad"),
+        # Garmin's 0-5 aerobic Training Effect: how hard the session was, independent of wrist HR.
+        "aerobic_te": a.get("aerobicTrainingEffect"),
         "kcal": a.get("calories"),
     }
 

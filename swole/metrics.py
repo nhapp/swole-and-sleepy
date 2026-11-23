@@ -346,6 +346,12 @@ def activity_load(a: dict, hr_max: float, rest_hr: float, cfg_or_sex, cat: str =
     if cat in tc.get("device_load_first_for", ["swim", "lift"]):
         if a.get("device_load"):
             return float(a["device_load"]), "garmin"
+        sw = tc.get("swim")
+        if cat == "swim" and sw:
+            # Effort from Garmin's aerobic Training Effect (1-5) over the whole session.
+            te = _clamp(float(a.get("aerobic_te") or sw.get("default_te", 3.0)), 1.0, 5.0)
+            rate = sw.get("base_per_min", 1.0) + sw.get("per_te_per_min", 0.4) * (te - 1)
+            return mins * rate, "swim-te" if a.get("aerobic_te") else "swim"
         return by_duration, "duration"
     if a.get("avg_hr") and hr_max > rest_hr:
         hrr = _clamp((a["avg_hr"] - rest_hr) / (hr_max - rest_hr), 0, 1)
@@ -376,6 +382,10 @@ def training(activities: list[dict], days: dict, cfg: dict, today: date) -> dict
     hr_max = max_hr(prof)
     for a in acts:
         a["cat"] = category(a, tc.get("long_run_minutes", 75))
+        a["moving_s"] = a.get("duration_s") or 0
+        # A swim session is the whole time in the pool: rests between sets and drills count too.
+        if a["cat"] == "swim" and tc.get("swim", {}).get("use_total_time", True) and a.get("elapsed_s"):
+            a["duration_s"] = max(a["elapsed_s"], a["moving_s"])
         a["load"], a["load_method"] = activity_load(a, hr_max, rest_hr, cfg, a["cat"])
         a["load"] = round(a["load"], 1)
         load_by_day[a["date"]] = load_by_day.get(a["date"], 0) + a["load"]
@@ -449,8 +459,8 @@ def training(activities: list[dict], days: dict, cfg: dict, today: date) -> dict
     weekly_progress = [{"cat": c, "target": n, "done": this_week.get(c, 0)} for c, n in targets.items() if n]
 
     recent = [
-        {k: a.get(k) for k in ("date", "source", "sport", "cat", "name", "duration_s", "distance_m", "avg_hr",
-                                "load", "load_method", "kcal")}
+        {k: a.get(k) for k in ("date", "source", "sport", "cat", "name", "duration_s", "moving_s", "distance_m",
+                                "avg_hr", "aerobic_te", "load", "load_method", "kcal")}
         for a in reversed(acts[-12:])
     ]
     return {

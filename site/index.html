@@ -762,10 +762,10 @@ function renderCharts() {
 
 function renderActivities() {
   const rows = DATA.derived.training.recent;
-  const method = { trimp: "HR", garmin: "Garmin", duration: "time" };
+  const method = { trimp: "HR", garmin: "Garmin", duration: "time", "swim-te": "effort", swim: "time" };
   $("#acts").innerHTML = `<thead><tr><th>Date</th><th>Activity</th><th>Time</th><th>Distance</th><th>Avg HR</th><th>Load</th><th>Source</th></tr></thead><tbody>${
     rows.map((a) => `<tr><td>${dlabel(a.date, { weekday: "short", month: "short", day: "numeric" })}</td><td style="text-align:left">${esc(a.sport)}${a.cat === "long_run" ? ' <span class="muted" style="font-size:11px">long</span>' : ""}</td>
-      <td>${hm(a.duration_s)}</td><td>${a.distance_m ? f(dist(a.distance_m / 1000), 1) + " " + distU() : "–"}</td>
+      <td>${hm(a.duration_s)}${a.cat === "swim" && a.moving_s && a.moving_s < a.duration_s - 60 ? ` <span class="muted" style="font-size:11px">${hm(a.moving_s)} moving</span>` : ""}</td><td>${a.distance_m ? f(dist(a.distance_m / 1000), 1) + " " + distU() : "–"}</td>
       <td>${a.avg_hr ? f(a.avg_hr) : "–"}</td><td>${f(a.load)} <span class="muted" style="font-size:11px">${method[a.load_method] || ""}</span></td>
       <td style="text-transform:capitalize">${esc(a.source)}</td></tr>`).join("") || `<tr><td colspan="7" class="muted">No activities yet.</td></tr>`}</tbody>`;
 }
@@ -783,7 +783,8 @@ function renderAssumptions() {
       <li>Two or more warnings force the day to Recover, whatever the score says.</li></ul></div>
     <div class="card"><h3>Training load</h3><ul>
       <li>Runs and rides are scored with Banister TRIMP from average HR, using max HR <code>${DATA.derived.training.today.max_hr_used}</code>${CFG.profile.max_hr ? "" : " (estimated from age; set your real max in config)"} and resting HR from your 30-day median.</li>
-      <li>Wrist HR is unreliable in water and barely rises when lifting, so swims and lifts use Garmin's own training load, or minutes × <code>${t.duration_load_per_min.swim}</code> (swim) / <code>${t.duration_load_per_min.lift}</code> (lift).</li>
+      <li>Swims count the whole session, rests and drills included, not just moving time. Wrist HR is unreliable in water, so a swim is scored from Garmin's Aerobic Training Effect: <code>${t.swim.base_per_min} + ${t.swim.per_te_per_min} × (TE − 1)</code> points per minute. A 70-minute TE 3 swim scores about ${f(70 * (t.swim.base_per_min + t.swim.per_te_per_min * 2))}.</li>
+      <li>Lifting barely raises heart rate, so lifts score <code>${t.duration_load_per_min.lift}</code> points per minute.</li>
       <li>A run of <code>${t.long_run_minutes} min</code> or more counts as a long run.</li>
       <li>Activities on both Garmin and Strava are counted once. The Garmin copy wins when start times are within 5 minutes.</li>
       <li>"This week vs your usual" compares the last ${t.acute_days} days of load with your ${t.chronic_days / 7}-week average. 0% means a typical week. ${signed(loadPct(t.acwr_low), 0)}% to ${signed(loadPct(t.acwr_high), 0)}% is normal; above ${signed(loadPct(t.acwr_danger), 0)}% is ramping too fast for your body to keep up. It's a rough guide, so read it alongside how you feel.</li>

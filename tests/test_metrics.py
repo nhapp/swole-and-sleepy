@@ -358,3 +358,22 @@ def test_auth_errors_still_fail():
     except HttpError:
         return
     raise AssertionError("401 should not be swallowed")
+
+
+def test_swim_counts_total_time_and_scores_by_training_effect():
+    swim = {"id": "garmin:1", "source": "garmin", "date": TODAY.isoformat(), "start_utc": f"{TODAY.isoformat()}T15:00:00+00:00",
+            "sport": "Lap Swimming", "duration_s": 50 * 60, "elapsed_s": 70 * 60, "distance_m": 2500,
+            "avg_hr": 110, "device_load": None, "aerobic_te": 3.0}
+    tr = metrics.training([swim], {}, CFG, TODAY)
+    s = tr["recent"][0]
+    assert s["duration_s"] == 70 * 60 and s["moving_s"] == 50 * 60
+    assert s["load_method"] == "swim-te" and s["load"] == 126.0   # 70 min x (1.0 + 0.4 x 2)
+    run = dict(swim, id="garmin:2", sport="Running", duration_s=50 * 60, elapsed_s=52 * 60, avg_hr=150, aerobic_te=None)
+    run_load = metrics.training([run], {}, CFG, TODAY)["recent"][0]["load"]
+    assert 0.7 < s["load"] / run_load < 1.6  # a solid swim now weighs like a comparable run
+
+
+def test_swim_without_training_effect_uses_default():
+    swim = {"duration_s": 3000, "elapsed_s": 4200, "sport": "Swim", "aerobic_te": None}
+    load, how = metrics.activity_load(dict(swim, duration_s=4200), 169, 52, CFG, "swim")
+    assert how == "swim" and round(load) == 126
